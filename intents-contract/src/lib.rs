@@ -325,7 +325,7 @@ impl Contract {
                 input_data,
                 Some(secrets_ref),
                 "Json".to_string(),
-                Some(sender_id.clone()),
+                Some(env::current_account_id()), // Refund NEAR to contract, not user
             )
             .then(
                 ext_self::ext(env::current_account_id())
