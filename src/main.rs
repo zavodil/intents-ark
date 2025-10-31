@@ -809,13 +809,17 @@ fn publish_swap_intent(
 }
 
 fn wait_for_settlement(intent_hash: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    let max_attempts = 30; // 30 seconds timeout
+    wait_for_settlement_with_timeout(intent_hash, 120) // 120 * 0.25s = 30 seconds
+}
 
+fn wait_for_settlement_with_timeout(
+    intent_hash: &str,
+    max_attempts: u32,
+) -> Result<bool, Box<dyn std::error::Error>> {
     for attempt in 0..max_attempts {
         if attempt > 0 {
-            // Sleep for 1 second between checks
-            // Note: WASI doesn't have std::thread::sleep, so we just loop
-            // In production, you'd use a proper sleep mechanism
+            // Sleep 250ms between checks
+            std::thread::sleep(Duration::from_millis(250));
         }
 
         let request = JsonRpcRequest {
@@ -965,8 +969,8 @@ fn withdraw_tokens(
 
     let intent_hash = result.intent_hash.ok_or("No intent_hash for withdraw")?;
 
-    // Wait for withdrawal settlement
-    wait_for_settlement(&intent_hash)
+    // Wait for withdrawal settlement (120 * 0.25s = 30 seconds timeout - same as swap)
+    wait_for_settlement_with_timeout(&intent_hash, 120)
 }
 
 // ============================================================================
