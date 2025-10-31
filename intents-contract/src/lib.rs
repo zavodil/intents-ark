@@ -4,7 +4,7 @@ mod types;
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::LookupMap;
 use near_sdk::json_types::U128;
-use near_sdk::{env, ext_contract, log, near, near_bindgen, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, PromiseError};
+use near_sdk::{env, ext_contract, log, near_bindgen, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, PromiseError};
 
 use types::{SwapRequest, SwapResponse, TokenConfig, TokenId, TokenReceiverMessage};
 
@@ -76,22 +76,6 @@ pub trait FungibleToken {
     );
 }
 
-/// OutLayer execution response
-#[derive(Debug)]
-#[near(serializers=[borsh, json])]
-pub struct ExecutionResponse {
-    pub success: bool,
-    pub output: Option<ExecutionOutput>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug)]
-#[near(serializers=[borsh, json])]
-pub struct ExecutionOutput {
-    pub data: String,
-    pub format: String,
-}
-
 /// Self callback interface
 #[ext_contract(ext_self)]
 #[allow(dead_code)]
@@ -105,7 +89,7 @@ trait ExtSelf {
         amount_in: U128,
         min_amount_out: U128,
         fee_amount: U128,
-        #[callback_result] result: Result<Option<ExecutionResponse>, PromiseError>,
+        #[callback_result] result: Result<Option<serde_json::Value>, PromiseError>,
     ) -> Option<U128>;
 }
 
@@ -350,23 +334,25 @@ impl Contract {
         amount_in: U128,
         min_amount_out: U128,
         fee_amount: U128,
-        #[callback_result] result: Result<Option<ExecutionResponse>, PromiseError>,
+        #[callback_result] result: Result<Option<serde_json::Value>, PromiseError>,
     ) -> Option<U128> {
         // Remove pending swap
         self.pending_swaps.remove(&request_id);
 
-        match result {
-            Ok(Some(exec_response)) => {
-                log!(
-                    "✅ Execution #{} result received: success={}",
-                    request_id,
-                    exec_response.success
-                );
+        // Debug: log what we received
+        log!("🔍 on_execution_response callback: request_id={}", request_id);
+        match &result {
+            Ok(Some(value)) => log!("   Result: Ok(Some(Value)) - {}", value),
+            Ok(None) => log!("   Result: Ok(None)"),
+            Err(e) => log!("   Result: Err({:?})", e),
+        }
 
-                if exec_response.success {
-                    // Parse SwapResponse from output JSON
-                    if let Some(output) = exec_response.output {
-                        match serde_json::from_str::<SwapResponse>(&output.data) {
+        match result {
+            Ok(Some(json_value)) => {
+                log!("✅ Execution #{} completed successfully", request_id);
+
+                // Parse SwapResponse directly from the JSON value returned by outlayer
+                match serde_json::from_value::<SwapResponse>(json_value) {
                             Ok(swap_response) => {
                                 log!(
                                     "📊 Swap data: amount_out={:?}, intent_hash={:?}",
@@ -434,19 +420,10 @@ impl Contract {
                                 env::panic_str(&format!("Failed to parse swap response: {}", parse_err));
                             }
                         }
-                    } else {
-                        env::panic_str("No output data in successful execution");
-                    }
-                } else {
-                    env::panic_str(&format!(
-                        "Execution failed: {}",
-                        exec_response.error.unwrap_or_else(|| "Unknown error".to_string())
-                    ));
-                }
             }
 
             Ok(None) => {
-                env::panic_str("OutLayer returned no response");
+                env::panic_str("No output data returned from execution");
             }
 
             Err(promise_error) => {
