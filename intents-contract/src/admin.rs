@@ -1,7 +1,4 @@
-use near_sdk::{env, log, AccountId, NearToken};
-use near_sdk::json_types::U128;
-
-use crate::{ext_ft, types::{TokenConfig, TokenId}, Balance, Contract, GAS_FOR_FT_TRANSFER};
+use crate::*;
 
 // ============================================================================
 // Internal Helper Functions
@@ -29,6 +26,7 @@ impl Contract {
 // Admin Functions
 // ============================================================================
 
+#[near_bindgen]
 impl Contract {
     pub fn set_owner(&mut self, new_owner_id: AccountId) {
         self.assert_owner();

@@ -1,16 +1,12 @@
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::AccountId;
-use schemars::JsonSchema;
+use near_sdk::{near, AccountId};
 
 pub type Balance = u128;
 
 pub type TokenId = AccountId;
 
 /// Token configuration for whitelist
-#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug)]
-#[borsh(crate = "near_sdk::borsh")]
-#[serde(crate = "near_sdk::serde")]
+#[derive(Clone, Debug)]
+#[near(serializers=[borsh, json])]
 pub struct TokenConfig {
     /// Defuse asset identifier (e.g., "nep141:wrap.near")
     pub defuse_asset_id: String,
@@ -19,8 +15,8 @@ pub struct TokenConfig {
 }
 
 /// Swap response from WASI execution
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-#[serde(crate = "near_sdk::serde")]
+#[derive(Clone, Debug)]
+#[near(serializers=[borsh, json])]
 pub struct SwapResponse {
     pub success: bool,
     pub amount_out: Option<String>,
@@ -29,9 +25,8 @@ pub struct SwapResponse {
 }
 
 /// Swap request stored in contract
-#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug)]
-#[borsh(crate = "near_sdk::borsh")]
-#[serde(crate = "near_sdk::serde")]
+#[derive(Clone, Debug)]
+#[near(serializers=[borsh, json])]
 pub struct SwapRequest {
     pub request_id: u64,
     pub sender_id: AccountId,
@@ -43,8 +38,7 @@ pub struct SwapRequest {
 }
 
 /// Message format for ft_transfer_call
-#[derive(Deserialize)]
-#[serde(crate = "near_sdk::serde")]
+#[near(serializers=[borsh, json])]
 pub enum TokenReceiverMessage {
     Swap {
         token_out: TokenId,

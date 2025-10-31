@@ -1,0 +1,7 @@
+{
+  "action": "withdraw",
+  "token": "wrap.near",
+  "receiver_id": "v1.publishintent.near",
+  "amount": "1000000000000000000000",
+  "swap_contract_id": "v1.publishintent.near"
+}

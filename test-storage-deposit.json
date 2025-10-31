@@ -1,0 +1,5 @@
+{
+  "action": "test_transaction",
+  "token_contract": "wrap.testnet",
+  "account_id": "zavodil2.testnet"
+}

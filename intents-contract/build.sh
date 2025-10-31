@@ -1,17 +1,17 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname $0)"
+cd $(dirname $0)
+mkdir -p res/local
 
-TARGET="${CARGO_TARGET_DIR:-../target}"
+echo "Building contract..."
 
-rustup target add wasm32-unknown-unknown
+# Build the contract
+cargo near build non-reproducible-wasm
 
-cargo build --target wasm32-unknown-unknown --release
+# Copy the WASM file to res/local/ (created in parent dir due to workspace)
+cp ../target/near/intents_contract/intents_contract.wasm res/local/
 
-mkdir -p res
-
-cp $TARGET/wasm32-unknown-unknown/release/intents_contract.wasm res/
-
-echo "✅ Contract built: res/intents_contract.wasm"
-ls -lh res/intents_contract.wasm
+# Show file info
+echo "✅ Contract built: res/local/intents_contract.wasm"
+ls -lh res/local/intents_contract.wasm

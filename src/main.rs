@@ -18,6 +18,13 @@ enum Input {
         action: String, // "test_storage"
         token_contract: String,
     },
+    Withdraw {
+        action: String, // "withdraw"
+        token: String,
+        receiver_id: String,
+        amount: String,
+        swap_contract_id: String,
+    },
     Swap {
         sender_id: String,
         token_in: String,
@@ -289,6 +296,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("🧪 Test mode: checking storage for {}", token_contract);
             handle_test_storage(token_contract)?;
         }
+        Input::Withdraw {
+            ref token,
+            ref receiver_id,
+            ref amount,
+            ref swap_contract_id,
+            ..
+        } => {
+            eprintln!("🏦 Withdraw mode: {} {} to {}", amount, token, receiver_id);
+
+            // Get swap contract private key from environment
+            let swap_contract_private_key = match env::var("SWAP_CONTRACT_PRIVATE_KEY") {
+                Ok(key) => key,
+                Err(_) => {
+                    let output = Output {
+                        success: false,
+                        amount_out: None,
+                        error_message: Some("SWAP_CONTRACT_PRIVATE_KEY not found in environment".to_string()),
+                        intent_hash: None,
+                    };
+                    print!("{}", serde_json::to_string(&output)?);
+                    io::stdout().flush()?;
+                    return Ok(());
+                }
+            };
+
+            // Execute withdraw
+            match withdraw_tokens(
+                swap_contract_id,
+                &swap_contract_private_key,
+                token,
+                receiver_id,
+                amount,
+            ) {
+                Ok(success) => {
+                    let output = Output {
+                        success,
+                        amount_out: Some(amount.clone()),
+                        error_message: if success { None } else { Some("Withdraw failed to settle".to_string()) },
+                        intent_hash: None,
+                    };
+                    print!("{}", serde_json::to_string(&output)?);
+                    io::stdout().flush()?;
+                }
+                Err(e) => {
+                    eprintln!("Withdraw execution failed: {:?}", e);
+                    let output = Output {
+                        success: false,
+                        amount_out: None,
+                        error_message: Some(format!("Internal error: {}", e)),
+                        intent_hash: None,
+                    };
+                    print!("{}", serde_json::to_string(&output)?);
+                    io::stdout().flush()?;
+                }
+            }
+        }
         Input::Swap {
             ref sender_id,
             ref token_in,
@@ -502,14 +565,14 @@ fn execute_swap(
 
     eprintln!("✅ Intent settled successfully!");
 
-    // Step 5: Withdraw tokens to original sender
-    eprintln!("Step 5: Withdrawing {} {} to {}", quote.amount_out, token_out, sender_id);
+    // Step 5: Withdraw tokens back to swap contract (NOT to original sender!)
+    eprintln!("Step 5: Withdrawing {} {} to swap contract {}", quote.amount_out, token_out, swap_contract_id);
 
     let withdraw_success = match withdraw_tokens(
         swap_contract_id,
         swap_contract_private_key,
         token_out,
-        sender_id,
+        swap_contract_id, // Withdraw to swap contract, not sender!
         &quote.amount_out,
     ) {
         Ok(success) => success,
@@ -825,6 +888,12 @@ fn withdraw_tokens(
     };
 
     let message_str = serde_json::to_string(&intent_message)?;
+    // Add space after each colon (to match Python format)
+    let message_str = message_str.replace("\":", "\": ");
+
+    eprintln!("📝 Withdraw message to sign:");
+    eprintln!("{}", message_str);
+    eprintln!("   Length: {} chars", message_str.len());
 
     // Generate nonce
     let nonce = generate_nonce();

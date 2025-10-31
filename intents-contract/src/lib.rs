@@ -4,10 +4,7 @@ mod types;
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::LookupMap;
 use near_sdk::json_types::U128;
-use near_sdk::{
-    env, ext_contract, log, near_bindgen, AccountId, BorshStorageKey, Gas,
-    NearToken, PanicOnDefault, PromiseError,
-};
+use near_sdk::{env, ext_contract, log, near, near_bindgen, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, PromiseError};
 
 use types::{SwapRequest, SwapResponse, TokenConfig, TokenId, TokenReceiverMessage};
 
@@ -80,16 +77,16 @@ pub trait FungibleToken {
 }
 
 /// OutLayer execution response
-#[derive(near_sdk::serde::Deserialize, Debug)]
-#[serde(crate = "near_sdk::serde")]
+#[derive(Debug)]
+#[near(serializers=[borsh, json])]
 pub struct ExecutionResponse {
     pub success: bool,
     pub output: Option<ExecutionOutput>,
     pub error: Option<String>,
 }
 
-#[derive(near_sdk::serde::Deserialize, Debug)]
-#[serde(crate = "near_sdk::serde")]
+#[derive(Debug)]
+#[near(serializers=[borsh, json])]
 pub struct ExecutionOutput {
     pub data: String,
     pub format: String,
