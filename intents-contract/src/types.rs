@@ -7,6 +7,17 @@ pub type Balance = u128;
 
 pub type TokenId = AccountId;
 
+/// Token configuration for whitelist
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct TokenConfig {
+    /// Defuse asset identifier (e.g., "nep141:wrap.near")
+    pub defuse_asset_id: String,
+    /// Minimum swap amount (in token's smallest unit)
+    pub min_swap_amount: Balance,
+}
+
 /// Swap response from WASI execution
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -42,12 +53,3 @@ pub enum TokenReceiverMessage {
     },
 }
 
-/// Token configuration with defuse asset ID
-#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug)]
-#[borsh(crate = "near_sdk::borsh")]
-#[serde(crate = "near_sdk::serde")]
-pub struct TokenConfig {
-    pub symbol: String,
-    pub decimals: u8,
-    pub defuse_asset_id: String,
-}
