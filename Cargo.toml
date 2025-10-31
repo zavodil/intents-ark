@@ -1,0 +1,43 @@
+[workspace]
+members = [".", "intents-contract"]
+resolver = "2"
+
+[package]
+name = "intents-ark"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "intents_ark"
+path = "src/lib.rs"
+
+[[bin]]
+name = "intents-ark"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.21"  # Use older version for simpler API
+sha2 = "0.10"
+hex = "0.4"
+ed25519-dalek = "2.1"
+bs58 = "0.5"
+borsh = { version = "1.5", features = ["derive"] }
+
+# HTTP client: wasi-http-client for WASI, reqwest for native
+wasi-http-client = { version = "0.2", optional = true }
+reqwest = { version = "0.11", features = ["blocking", "json"], optional = true }
+
+[features]
+default = ["wasi"]
+wasi = ["wasi-http-client"]
+native = ["reqwest"]
+
+[dev-dependencies]
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
