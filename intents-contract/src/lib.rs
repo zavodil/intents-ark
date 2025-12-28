@@ -280,9 +280,11 @@ impl Contract {
 
         // Call OutLayer
         let code_source = near_sdk::serde_json::json!({
-            "repo": WASI_REPO,
-            "commit": WASI_COMMIT,
-            "build_target": "wasm32-wasip2"
+            "GitHub": {
+                "repo": WASI_REPO,
+                "commit": WASI_COMMIT,
+                "build_target": "wasm32-wasip2"
+            }
         });
 
         let resource_limits = near_sdk::serde_json::json!({
