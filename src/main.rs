@@ -1,4 +1,4 @@
-mod crypto;
+#[allow(dead_code, deprecated)]
 mod near_tx;
 
 use serde::{Deserialize, Serialize};
@@ -15,15 +15,9 @@ use wasi_http_client::Client;
 #[serde(untagged)]
 enum Input {
     TestStorage {
+        #[allow(dead_code)]
         action: String, // "test_storage"
         token_contract: String,
-    },
-    Withdraw {
-        action: String, // "withdraw"
-        token: String,
-        receiver_id: String,
-        amount: String,
-        swap_contract_id: String,
     },
     Swap {
         sender_id: String,
@@ -40,109 +34,89 @@ struct Output {
     success: bool,
     amount_out: Option<String>,
     error_message: Option<String>,
+    /// deposit_address from 1Click (for tracking), or intent_hash from swap_details
     intent_hash: Option<String>,
 }
 
 // ============================================================================
-// NEAR Intents API Types
+// 1Click API Types (matching coordinator's backend/mod.rs)
 // ============================================================================
 
 #[derive(Serialize)]
-struct JsonRpcRequest<T> {
-    id: u32,
-    jsonrpc: String,
-    method: String,
-    params: Vec<T>,
-}
-
-#[derive(Serialize)]
-struct QuoteParams {
-    defuse_asset_identifier_in: String,
-    defuse_asset_identifier_out: String,
-    exact_amount_in: String,
-}
-
-#[derive(Deserialize)]
-struct JsonRpcResponse<T> {
-    result: Option<T>,
-    error: Option<JsonRpcError>,
+#[serde(rename_all = "camelCase")]
+struct OneClickQuoteRequest {
+    dry: bool,
+    swap_type: String,
+    slippage_tolerance: u32,
+    origin_asset: String,
+    deposit_type: String,
+    destination_asset: String,
+    amount: String,
+    refund_to: String,
+    refund_type: String,
+    recipient: String,
+    recipient_type: String,
+    deadline: String,
 }
 
 #[derive(Deserialize, Debug)]
-struct JsonRpcError {
-    message: String,
+#[serde(rename_all = "camelCase")]
+struct OneClickQuoteResponse {
+    #[allow(dead_code)]
+    correlation_id: String,
+    quote: OneClickQuote,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-struct Quote {
+#[serde(rename_all = "camelCase")]
+struct OneClickQuote {
+    deposit_address: String,
+    #[allow(dead_code)]
     amount_in: String,
     amount_out: String,
-    expiration_time: String,
-    quote_hash: String,
+    #[allow(dead_code)]
+    min_amount_out: String,
+    #[allow(dead_code)]
+    deadline: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    time_estimate: Option<u64>,
 }
 
 #[derive(Serialize)]
-struct PublishIntentParams {
-    signed_data: SignedData,
-    quote_hashes: Option<Vec<String>>,
-}
-
-#[derive(Serialize)]
-struct SignedData {
-    payload: Payload,
-    standard: String,
-    signature: String,
-    public_key: String,
-}
-
-#[derive(Serialize)]
-struct Payload {
-    message: String,
-    nonce: String,
-    recipient: String,
+#[serde(rename_all = "camelCase")]
+struct OneClickSubmitDeposit {
+    tx_hash: String,
+    deposit_address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    near_sender_account: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
-struct PublishIntentResult {
+#[serde(rename_all = "camelCase")]
+struct OneClickStatusResponse {
     status: String,
-    intent_hash: Option<String>,
+    #[serde(default)]
+    swap_details: Option<OneClickSwapDetails>,
 }
 
-#[derive(Serialize)]
-struct IntentMessage {
-    signer_id: String,
-    deadline: String,
-    intents: Vec<IntentAction>,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "intent")]
-enum IntentAction {
-    #[serde(rename = "token_diff")]
-    TokenDiff { diff: serde_json::Value },
-    #[serde(rename = "ft_withdraw")]
-    FtWithdraw {
-        token: String,
-        receiver_id: String,
-        amount: String,
-    },
-}
-
-#[derive(Serialize)]
-struct GetStatusParams {
-    intent_hash: String,
-}
-
-#[derive(Deserialize)]
-struct GetStatusResult {
-    status: String,
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct OneClickSwapDetails {
+    #[serde(default)]
+    amount_out: Option<String>,
+    #[serde(default)]
+    intent_hashes: Vec<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    near_tx_hashes: Vec<String>,
 }
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-const INTENTS_API_URL: &str = "https://solver-relay-v2.chaindefuser.com/rpc";
+const ONECLICK_BASE_URL: &str = "https://1click.chaindefuser.com";
 const INTENTS_CONTRACT: &str = "intents.near";
 
 // ============================================================================
@@ -159,17 +133,15 @@ struct TestStorageOutput {
 }
 
 fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Get credentials from environment
     let swap_contract_id = env::var("SWAP_CONTRACT_ID")
         .map_err(|_| "Missing SWAP_CONTRACT_ID env var")?;
     let swap_contract_private_key = env::var("SWAP_CONTRACT_PRIVATE_KEY")
         .map_err(|_| "Missing SWAP_CONTRACT_PRIVATE_KEY env var")?;
     let rpc_url = env::var("NEAR_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc.mainnet.near.org".to_string());
+        .unwrap_or_else(|_| "https://rpc.mainnet.fastnear.com".to_string());
 
-    eprintln!("📊 Step 1: Checking storage_balance_of...");
+    eprintln!("Step 1: Checking storage_balance_of...");
 
-    // Check storage balance using view()
     let args = serde_json::json!({
         "account_id": swap_contract_id
     });
@@ -183,12 +155,10 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
 
     let output = match balance_result {
         Ok(result_str) => {
-            // Parse storage balance
             let balance_json: serde_json::Value = serde_json::from_str(&result_str)?;
 
             if balance_json.is_null() {
-                // Not registered - call storage_deposit
-                eprintln!("⚠️  Not registered. Calling storage_deposit...");
+                eprintln!("Not registered. Calling storage_deposit...");
 
                 match near_tx::storage_deposit(
                     &rpc_url,
@@ -199,7 +169,7 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
                     false,
                 ) {
                     Ok(tx_hash) => {
-                        eprintln!("✅ Transaction successful! TX: {}", tx_hash);
+                        eprintln!("Transaction successful! TX: {}", tx_hash);
                         TestStorageOutput {
                             success: true,
                             already_registered: false,
@@ -209,7 +179,7 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
                         }
                     }
                     Err(e) => {
-                        eprintln!("❌ Transaction failed: {}", e);
+                        eprintln!("Transaction failed: {}", e);
                         TestStorageOutput {
                             success: false,
                             already_registered: false,
@@ -220,11 +190,10 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
                     }
                 }
             } else {
-                // Already registered
                 let total = balance_json.get("total")
                     .and_then(|t| t.as_str())
                     .unwrap_or("unknown");
-                eprintln!("✅ Already registered! Balance: {}", total);
+                eprintln!("Already registered! Balance: {}", total);
 
                 TestStorageOutput {
                     success: true,
@@ -236,8 +205,7 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
             }
         }
         Err(e) => {
-            // Error (likely not registered) - try storage_deposit
-            eprintln!("⚠️  Error checking balance: {}. Trying storage_deposit...", e);
+            eprintln!("Error checking balance: {}. Trying storage_deposit...", e);
 
             match near_tx::storage_deposit(
                 &rpc_url,
@@ -248,7 +216,7 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
                 false,
             ) {
                 Ok(tx_hash) => {
-                    eprintln!("✅ Transaction successful! TX: {}", tx_hash);
+                    eprintln!("Transaction successful! TX: {}", tx_hash);
                     TestStorageOutput {
                         success: true,
                         already_registered: false,
@@ -258,7 +226,7 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Transaction failed: {}", e);
+                    eprintln!("Transaction failed: {}", e);
                     TestStorageOutput {
                         success: false,
                         already_registered: false,
@@ -271,7 +239,6 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
         }
     };
 
-    // Output to stdout
     print!("{}", serde_json::to_string(&output)?);
     io::stdout().flush()?;
 
@@ -283,74 +250,15 @@ fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::E
 // ============================================================================
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Read input from stdin
     let mut input_string = String::new();
     io::stdin().read_to_string(&mut input_string)?;
 
-    // Parse input JSON
     let input: Input = serde_json::from_str(&input_string)?;
 
-    // Route based on input type
     match input {
         Input::TestStorage { ref token_contract, .. } => {
-            eprintln!("🧪 Test mode: checking storage for {}", token_contract);
+            eprintln!("Test mode: checking storage for {}", token_contract);
             handle_test_storage(token_contract)?;
-        }
-        Input::Withdraw {
-            ref token,
-            ref receiver_id,
-            ref amount,
-            ref swap_contract_id,
-            ..
-        } => {
-            eprintln!("🏦 Withdraw mode: {} {} to {}", amount, token, receiver_id);
-
-            // Get swap contract private key from environment
-            let swap_contract_private_key = match env::var("SWAP_CONTRACT_PRIVATE_KEY") {
-                Ok(key) => key,
-                Err(_) => {
-                    let output = Output {
-                        success: false,
-                        amount_out: None,
-                        error_message: Some("SWAP_CONTRACT_PRIVATE_KEY not found in environment".to_string()),
-                        intent_hash: None,
-                    };
-                    print!("{}", serde_json::to_string(&output)?);
-                    io::stdout().flush()?;
-                    return Ok(());
-                }
-            };
-
-            // Execute withdraw
-            match withdraw_tokens(
-                swap_contract_id,
-                &swap_contract_private_key,
-                token,
-                receiver_id,
-                amount,
-            ) {
-                Ok(success) => {
-                    let output = Output {
-                        success,
-                        amount_out: Some(amount.clone()),
-                        error_message: if success { None } else { Some("Withdraw failed to settle".to_string()) },
-                        intent_hash: None,
-                    };
-                    print!("{}", serde_json::to_string(&output)?);
-                    io::stdout().flush()?;
-                }
-                Err(e) => {
-                    eprintln!("Withdraw execution failed: {:?}", e);
-                    let output = Output {
-                        success: false,
-                        amount_out: None,
-                        error_message: Some(format!("Internal error: {}", e)),
-                        intent_hash: None,
-                    };
-                    print!("{}", serde_json::to_string(&output)?);
-                    io::stdout().flush()?;
-                }
-            }
         }
         Input::Swap {
             ref sender_id,
@@ -360,10 +268,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ref min_amount_out,
             ref swap_contract_id,
         } => {
-            eprintln!("Processing swap for {}: {} {} → {} {}",
+            eprintln!("Processing swap for {}: {} {} -> {} {}",
                 sender_id, amount_in, token_in, min_amount_out, token_out);
 
-            // Get swap contract private key from environment (passed via secrets)
             let swap_contract_private_key = match env::var("SWAP_CONTRACT_PRIVATE_KEY") {
                 Ok(key) => key,
                 Err(_) => {
@@ -379,7 +286,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            // Execute swap flow
             match execute_swap(
                 sender_id,
                 token_in,
@@ -420,11 +326,28 @@ fn execute_swap(
     swap_contract_id: &str,
     swap_contract_private_key: &str,
 ) -> Result<Output, Box<dyn std::error::Error>> {
-    // Step 1: Get quote
-    eprintln!("Step 1: Getting quote from NEAR Intents API");
-    let quote = get_quote(token_in, token_out, amount_in)?;
+    let oneclick_jwt = env::var("ONECLICK_JWT").ok().filter(|s| !s.is_empty());
 
-    let amount_out_num: u128 = quote.amount_out.parse()
+    let rpc_url = env::var("NEAR_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.mainnet.fastnear.com".to_string());
+
+    // Step 1: Get 1Click quote
+    eprintln!("Step 1: Getting 1Click quote {} -> {}", token_in, token_out);
+    let quote_resp = get_oneclick_quote(
+        oneclick_jwt.as_deref(),
+        token_in,
+        token_out,
+        amount_in,
+        swap_contract_id,
+    )?;
+
+    let deposit_address = &quote_resp.quote.deposit_address;
+    let amount_out = &quote_resp.quote.amount_out;
+
+    eprintln!("1Click quote: deposit_address={}, amount_out={}", deposit_address, amount_out);
+
+    // Step 2: Validate min_amount_out
+    let amount_out_num: u128 = amount_out.parse()
         .map_err(|_| "Failed to parse amount_out")?;
     let min_amount_out_num: u128 = min_amount_out.parse()
         .map_err(|_| "Failed to parse min_amount_out")?;
@@ -434,23 +357,14 @@ fn execute_swap(
             success: false,
             amount_out: None,
             error_message: Some(format!(
-                "Insufficient liquidity: {} < {}",
-                amount_out_num, min_amount_out_num
+                "Quote amount_out ({}) is less than min_amount_out ({})",
+                amount_out, min_amount_out
             )),
             intent_hash: None,
         });
     }
 
-    eprintln!("✅ Quote received: {} out, expires at {}", quote.amount_out, quote.expiration_time);
-
-    // Get RPC URL from environment
-    let rpc_url = std::env::var("NEAR_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc.mainnet.near.org".to_string());
-
-    // Step 1.5: Pre-flight check - verify sender has storage deposit for output token
-    eprintln!("Step 1.5: Checking storage deposit for output token...");
-
-    // Extract token contract from defuse asset ID
+    // Step 2.5: Pre-flight check - verify sender has storage deposit for output token
     let token_out_contract = token_out.strip_prefix("nep141:")
         .ok_or("Invalid token_out format, expected nep141:address")?;
 
@@ -469,7 +383,7 @@ fn execute_swap(
                 .map_err(|_| "Failed to parse storage balance response")?;
 
             if balance_json.is_null() {
-                eprintln!("❌ Pre-flight check failed: sender {} has no storage deposit for {}",
+                eprintln!("Pre-flight check failed: sender {} has no storage deposit for {}",
                     sender_id, token_out_contract);
                 return Ok(Output {
                     success: false,
@@ -481,580 +395,325 @@ fn execute_swap(
                     intent_hash: None,
                 });
             }
-            eprintln!("✅ Storage deposit verified for {}", sender_id);
+            eprintln!("Storage deposit verified for {}", sender_id);
         }
         Err(e) => {
-            eprintln!("⚠️  Warning: Could not verify storage deposit ({}). Proceeding anyway...", e);
-            // Continue - storage check failure shouldn't block swap in production
+            eprintln!("Warning: Could not verify storage deposit ({}). Proceeding anyway...", e);
         }
     }
 
-    // Step 2: Deposit tokens to intents.near
-    eprintln!("Step 2: Depositing {} to intents.near", amount_in);
-
-    // Extract token contract address from defuse asset ID (format: "nep141:token.near")
-    let token_contract = token_in.strip_prefix("nep141:")
+    // Step 3: Deposit tokens to intents.near via ft_transfer_call
+    let token_in_contract = token_in.strip_prefix("nep141:")
         .ok_or("Invalid token_in format, expected nep141:address")?;
 
-    eprintln!("📤 Calling ft_transfer_call: {} {} from {} to {}",
-        amount_in, token_contract, swap_contract_id, INTENTS_CONTRACT);
+    eprintln!("Step 3: Depositing {} {} into intents.near", amount_in, token_in_contract);
 
-    let deposit_tx_hash = match near_tx::ft_transfer_call(
+    let deposit_tx = near_tx::ft_transfer_call(
         &rpc_url,
         swap_contract_id,
         swap_contract_private_key,
-        token_contract,
+        token_in_contract,
         INTENTS_CONTRACT,
         amount_in,
         "",
-    ) {
-        Ok(tx_hash) => {
-            eprintln!("✅ Deposit successful: {}", tx_hash);
-            eprintln!("   🔗 View on explorer: https://nearblocks.io/txns/{}", tx_hash);
-            tx_hash
-        }
-        Err(e) => {
-            eprintln!("❌ Deposit failed: {}", e);
-            return Err(e);
-        }
-    };
+    )?;
 
-    // Step 3: Publish swap intent
-    eprintln!("Step 3: Publishing swap intent to NEAR Intents API");
-    eprintln!("   Swap: {} {} → {} {}", quote.amount_in, token_in, quote.amount_out, token_out);
+    eprintln!("Deposit tx: {}", deposit_tx);
 
-    let intent_hash = match publish_swap_intent(
+    // Step 4: mt_transfer on intents.near — move tokens to 1Click deposit address
+    eprintln!("Step 4: mt_transfer {} {} to deposit address {}", amount_in, token_in, deposit_address);
+
+    let mt_args = serde_json::json!({
+        "receiver_id": deposit_address,
+        "token_id": token_in,
+        "amount": amount_in,
+    });
+
+    let mt_tx = near_tx::call(
+        &rpc_url,
         swap_contract_id,
         swap_contract_private_key,
-        token_in,
-        token_out,
-        &quote,
+        INTENTS_CONTRACT,
+        "mt_transfer",
+        &mt_args.to_string(),
+        100_000_000_000_000, // 100 TGas
+        1,                   // 1 yoctoNEAR
+    )?;
+
+    eprintln!("mt_transfer tx: {}", mt_tx);
+
+    // Step 5: Notify 1Click about the deposit (best-effort, non-fatal)
+    eprintln!("Step 5: Submitting deposit notification to 1Click");
+    if let Err(e) = submit_oneclick_deposit(
+        oneclick_jwt.as_deref(),
+        &mt_tx,
+        deposit_address,
+        Some(swap_contract_id),
     ) {
-        Ok(hash) => {
-            eprintln!("✅ Intent published successfully");
-            eprintln!("   Intent hash: {}", hash);
-            hash
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to publish intent: {}", e);
-            return Err(e);
-        }
-    };
+        eprintln!("Warning: Failed to submit deposit to 1Click (non-fatal): {}", e);
+    }
 
-    // Step 4: Wait for settlement
-    eprintln!("Step 4: Waiting for intent settlement (max 30 seconds)...");
+    // Step 6: Poll 1Click status until terminal state
+    eprintln!("Step 6: Polling 1Click status for deposit_address={}", deposit_address);
+    let status_resp = poll_oneclick_status(oneclick_jwt.as_deref(), deposit_address)?;
 
-    let settled = match wait_for_settlement(&intent_hash) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ Error checking settlement status: {}", e);
-            return Err(e);
+    match status_resp.status.as_str() {
+        "SUCCESS" => {
+            let actual_amount_out = status_resp.swap_details
+                .as_ref()
+                .and_then(|d| d.amount_out.clone())
+                .unwrap_or_else(|| amount_out.clone());
+
+            let intent_hash = status_resp.swap_details
+                .as_ref()
+                .and_then(|d| d.intent_hashes.first().cloned())
+                .unwrap_or_else(|| deposit_address.clone());
+
+            eprintln!("Swap completed: {} {} -> {} {}", amount_in, token_in, actual_amount_out, token_out);
+
+            Ok(Output {
+                success: true,
+                amount_out: Some(actual_amount_out),
+                error_message: None,
+                intent_hash: Some(intent_hash),
+            })
         }
-    };
-
-    if !settled {
-        eprintln!("❌ Intent failed to settle within 30 second timeout");
-        eprintln!("   Intent hash: {}", intent_hash);
-        return Ok(Output {
+        "FAILED" => Ok(Output {
             success: false,
             amount_out: None,
-            error_message: Some("Intent failed to settle within timeout".to_string()),
-            intent_hash: Some(intent_hash),
-        });
-    }
-
-    eprintln!("✅ Intent settled successfully!");
-
-    // Step 5: Withdraw tokens back to swap contract (NOT to original sender!)
-    eprintln!("Step 5: Withdrawing {} {} to swap contract {}", quote.amount_out, token_out, swap_contract_id);
-
-    let withdraw_success = match withdraw_tokens(
-        swap_contract_id,
-        swap_contract_private_key,
-        token_out,
-        swap_contract_id, // Withdraw to swap contract, not sender!
-        &quote.amount_out,
-    ) {
-        Ok(success) => success,
-        Err(e) => {
-            eprintln!("❌ Withdrawal failed: {}", e);
-            return Err(e);
-        }
-    };
-
-    if !withdraw_success {
-        eprintln!("❌ Withdrawal returned failure status");
-        return Ok(Output {
+            error_message: Some("1Click swap failed".to_string()),
+            intent_hash: Some(deposit_address.clone()),
+        }),
+        "REFUNDED" => Ok(Output {
             success: false,
-            amount_out: Some(quote.amount_out.clone()),
-            error_message: Some("Failed to withdraw tokens from intents contract".to_string()),
-            intent_hash: Some(intent_hash),
-        });
+            amount_out: None,
+            error_message: Some("1Click swap was refunded — tokens returned to wallet".to_string()),
+            intent_hash: Some(deposit_address.clone()),
+        }),
+        other => Ok(Output {
+            success: false,
+            amount_out: None,
+            error_message: Some(format!("1Click swap still processing after timeout (status: {})", other)),
+            intent_hash: Some(deposit_address.clone()),
+        }),
     }
-
-    eprintln!("✅ Withdrawal successful!");
-    eprintln!("🎉 Swap completed successfully: {} {} → {} {}",
-        quote.amount_in, token_in, quote.amount_out, token_out);
-
-    Ok(Output {
-        success: true,
-        amount_out: Some(quote.amount_out.clone()),
-        error_message: None,
-        intent_hash: Some(intent_hash),
-    })
 }
 
 // ============================================================================
-// NEAR Intents API Functions
+// 1Click API Functions
 // ============================================================================
 
-fn get_quote(
+fn get_oneclick_quote(
+    jwt: Option<&str>,
     token_in: &str,
     token_out: &str,
     amount_in: &str,
-) -> Result<Quote, Box<dyn std::error::Error>> {
-    let request = JsonRpcRequest {
-        id: 1,
-        jsonrpc: "2.0".to_string(),
-        method: "quote".to_string(),
-        params: vec![QuoteParams {
-            defuse_asset_identifier_in: token_in.to_string(),
-            defuse_asset_identifier_out: token_out.to_string(),
-            exact_amount_in: amount_in.to_string(),
-        }],
+    swap_contract_id: &str,
+) -> Result<OneClickQuoteResponse, Box<dyn std::error::Error>> {
+    let deadline = get_deadline_iso8601(300);
+
+    let request = OneClickQuoteRequest {
+        dry: false,
+        swap_type: "EXACT_INPUT".to_string(),
+        slippage_tolerance: 100, // 1%
+        origin_asset: token_in.to_string(),
+        deposit_type: "INTENTS".to_string(),
+        destination_asset: token_out.to_string(),
+        amount: amount_in.to_string(),
+        refund_to: swap_contract_id.to_string(),
+        refund_type: "INTENTS".to_string(),
+        recipient: swap_contract_id.to_string(),
+        recipient_type: "DESTINATION_CHAIN".to_string(),
+        deadline,
     };
 
-    // Retry logic: 3 attempts with 1 second delay
-    const MAX_RETRIES: u32 = 3;
-    const RETRY_DELAY_MS: u64 = 1000;
+    let url = format!("{}/v0/quote", ONECLICK_BASE_URL);
+    let body = serde_json::to_string(&request)?;
 
-    let mut last_error = String::new();
+    const MAX_RETRIES: u32 = 3;
+    let mut last_error = String::from("no attempts made");
 
     for attempt in 1..=MAX_RETRIES {
-        eprintln!("🔄 Quote API attempt {}/{}", attempt, MAX_RETRIES);
+        eprintln!("1Click quote attempt {}/{}", attempt, MAX_RETRIES);
 
-        match Client::new()
-            .post(INTENTS_API_URL)
+        let mut req = Client::new()
+            .post(&url)
             .header("Content-Type", "application/json")
-            .connect_timeout(Duration::from_secs(10))
-            .body(serde_json::to_string(&request)?.as_bytes())
-            .send()
-        {
+            .connect_timeout(Duration::from_secs(15));
+        if let Some(token) = jwt {
+            req = req.header("Authorization", format!("Bearer {}", token).as_str());
+        }
+        match req.body(body.as_bytes()).send() {
             Ok(response) => {
                 let status = response.status();
-                if status != 200 {
-                    last_error = format!("Quote API returned status {}", status);
-                    eprintln!("⚠️  Attempt {} failed: {}", attempt, last_error);
-                    if attempt < MAX_RETRIES {
-                        std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-                        continue;
-                    }
-                } else {
-                    match response.body() {
-                        Ok(body) => {
-                            match serde_json::from_slice::<JsonRpcResponse<Vec<Quote>>>(&body) {
-                                Ok(json_response) => {
-                                    if let Some(error) = json_response.error {
-                                        last_error = format!("Quote API error: {}", error.message);
-                                        eprintln!("⚠️  Attempt {} failed: {}", attempt, last_error);
-                                        if attempt < MAX_RETRIES {
-                                            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-                                            continue;
-                                        }
-                                    } else if let Some(quotes) = json_response.result {
-                                        // Find best quote (highest amount_out)
-                                        if let Some(best_quote) = quotes
-                                            .into_iter()
-                                            .max_by_key(|q| q.amount_out.parse::<u128>().unwrap_or(0))
-                                        {
-                                            eprintln!("✅ Quote received successfully");
-                                            return Ok(best_quote);
-                                        } else {
-                                            last_error = "No valid quotes".to_string();
-                                        }
-                                    } else {
-                                        last_error = "No quotes returned".to_string();
-                                    }
-                                }
+                match response.body() {
+                    Ok(resp_body) => {
+                        let resp_str = String::from_utf8_lossy(&resp_body);
+                        if status / 100 != 2 {
+                            last_error = format!("HTTP {}: {}", status, &resp_str[..resp_str.len().min(500)]);
+                            eprintln!("Attempt {}: {}", attempt, last_error);
+                        } else {
+                            match serde_json::from_slice::<OneClickQuoteResponse>(&resp_body) {
+                                Ok(quote_resp) => return Ok(quote_resp),
                                 Err(e) => {
-                                    last_error = format!("Failed to parse response: {}", e);
+                                    last_error = format!("JSON parse error: {} body={}", e, &resp_str[..resp_str.len().min(500)]);
+                                    eprintln!("Attempt {}: {}", attempt, last_error);
                                 }
                             }
                         }
-                        Err(e) => {
-                            last_error = format!("Failed to read response body: {}", e);
-                        }
+                    }
+                    Err(e) => {
+                        last_error = format!("Failed to read response body: {}", e);
+                        eprintln!("Attempt {}: {}", attempt, last_error);
                     }
                 }
             }
             Err(e) => {
                 last_error = format!("HTTP request failed: {}", e);
-                eprintln!("⚠️  Attempt {} failed: {}", attempt, last_error);
+                eprintln!("Attempt {}: {}", attempt, last_error);
             }
         }
 
         if attempt < MAX_RETRIES {
-            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+            std::thread::sleep(Duration::from_secs(2));
         }
     }
 
-    Err(format!("Quote API failed after {} retries. Last error: {}", MAX_RETRIES, last_error).into())
+    Err(format!("1Click quote failed after {} retries. Last error: {}", MAX_RETRIES, last_error).into())
 }
 
-fn publish_swap_intent(
-    signer_id: &str,
-    private_key: &str,
-    token_in: &str,
-    token_out: &str,
-    quote: &Quote,
-) -> Result<String, Box<dyn std::error::Error>> {
-    // Use tokens WITH "nep141:" prefix (as per official docs)
-    // https://docs.near-intents.org/near-intents/market-makers/bus/solver-relay
-
-    // Build intent message using json! macro to preserve field order
-    let diff = serde_json::json!({
-        token_in: format!("-{}", quote.amount_in),
-        token_out: quote.amount_out.clone()
-    });
-
-    let intent_message = IntentMessage {
-        signer_id: signer_id.to_string(),
-        deadline: quote.expiration_time.clone(),
-        intents: vec![IntentAction::TokenDiff {
-            diff,
-        }],
+fn submit_oneclick_deposit(
+    jwt: Option<&str>,
+    tx_hash: &str,
+    deposit_address: &str,
+    near_sender_account: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request = OneClickSubmitDeposit {
+        tx_hash: tx_hash.to_string(),
+        deposit_address: deposit_address.to_string(),
+        near_sender_account: near_sender_account.map(|s| s.to_string()),
     };
 
-    // Serialize with spaces after colons (like Python json.dumps)
-    let message_str = serde_json::to_string(&intent_message)?;
-    // Add space after each colon (to match Python format)
-    let message_str = message_str.replace("\":", "\": ");
+    let url = format!("{}/v0/deposit/submit", ONECLICK_BASE_URL);
 
-    eprintln!("📝 Intent message to sign:");
-    eprintln!("{}", message_str);
-    eprintln!("   Length: {} chars", message_str.len());
-
-    // Generate nonce
-    let nonce = generate_nonce();
-
-    // Sign the intent (simplified - in production use proper ed25519 signing)
-    let signature = sign_intent(&message_str, &nonce, private_key)?;
-
-    // Publish intent
-    let params = PublishIntentParams {
-        signed_data: SignedData {
-            payload: Payload {
-                message: message_str,
-                nonce: nonce.clone(),
-                recipient: INTENTS_CONTRACT.to_string(),
-            },
-            standard: "nep413".to_string(),
-            signature: format!("ed25519:{}", signature),
-            public_key: derive_public_key(private_key)?,
-        },
-        quote_hashes: Some(vec![quote.quote_hash.clone()]),
-    };
-
-    let request = JsonRpcRequest {
-        id: 1,
-        jsonrpc: "2.0".to_string(),
-        method: "publish_intent".to_string(),
-        params: vec![params],
-    };
-
-    eprintln!("📤 Publishing swap intent to: {}", INTENTS_API_URL);
-    eprintln!("   Method: publish_intent");
-    eprintln!("   Signer: {}", signer_id);
-    eprintln!("   Token in: {} (amount: {})", token_in, quote.amount_in);
-    eprintln!("   Token out: {} (amount: {})", token_out, quote.amount_out);
-    eprintln!("   Quote hash: {}", quote.quote_hash);
-
-    let request_json = serde_json::to_string_pretty(&request)?;
-    eprintln!("📦 Request body (first 2000 chars):\n{}", &request_json.chars().take(2000).collect::<String>());
-
-    let response = Client::new()
-        .post(INTENTS_API_URL)
+    let mut req = Client::new()
+        .post(&url)
         .header("Content-Type", "application/json")
-        .connect_timeout(Duration::from_secs(10))
-        .body(serde_json::to_string(&request)?.as_bytes())
-        .send()?;
+        .connect_timeout(Duration::from_secs(10));
+    if let Some(token) = jwt {
+        req = req.header("Authorization", format!("Bearer {}", token).as_str());
+    }
+    let response = req.body(serde_json::to_string(&request)?.as_bytes()).send()?;
 
-    if response.status() != 200 {
-        return Err(format!("Publish intent API returned status {}", response.status()).into());
+    let status = response.status();
+    if status / 100 != 2 {
+        let body = response.body().unwrap_or_default();
+        let body_str = String::from_utf8_lossy(&body);
+        return Err(format!("1Click deposit/submit returned HTTP {}: {}", status, body_str).into());
     }
 
-    let body = response.body()?;
-
-    // Debug: print response body
-    let body_str = String::from_utf8_lossy(&body);
-    eprintln!("📥 Publish intent response (first 1000 chars): {}", &body_str.chars().take(1000).collect::<String>());
-
-    let json_response: JsonRpcResponse<PublishIntentResult> = serde_json::from_slice(&body)
-        .map_err(|e| format!("Failed to parse publish_intent response: {}. Body: {}", e, body_str))?;
-
-    if let Some(error) = json_response.error {
-        eprintln!("❌ API returned error object: {:?}", error);
-        return Err(format!("Publish intent API error: {}", error.message).into());
-    }
-
-    let result = json_response.result.ok_or("No result from publish_intent")?;
-
-    eprintln!("📊 Publish intent result: status={}, intent_hash={:?}", result.status, result.intent_hash);
-
-    if result.status != "OK" {
-        return Err(format!("Intent publish failed with status: {}. Full result: {:?}", result.status, result).into());
-    }
-
-    result.intent_hash.ok_or("No intent_hash returned".into())
+    eprintln!("1Click deposit submitted: tx={}, deposit_addr={}", tx_hash, deposit_address);
+    Ok(())
 }
 
-fn wait_for_settlement(intent_hash: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    wait_for_settlement_with_timeout(intent_hash, 120) // 120 * 0.25s = 30 seconds
-}
+fn poll_oneclick_status(
+    jwt: Option<&str>,
+    deposit_address: &str,
+) -> Result<OneClickStatusResponse, Box<dyn std::error::Error>> {
+    const POLL_INTERVAL_MS: u64 = 2_000;
+    const POLL_TIMEOUT_MS: u64 = 120_000;
+    let max_attempts = POLL_TIMEOUT_MS / POLL_INTERVAL_MS;
 
-fn wait_for_settlement_with_timeout(
-    intent_hash: &str,
-    max_attempts: u32,
-) -> Result<bool, Box<dyn std::error::Error>> {
+    let url = format!("{}/v0/status?depositAddress={}", ONECLICK_BASE_URL, deposit_address);
+
     for attempt in 0..max_attempts {
         if attempt > 0 {
-            // Sleep 250ms between checks
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
         }
 
-        let request = JsonRpcRequest {
-            id: 1,
-            jsonrpc: "2.0".to_string(),
-            method: "get_status".to_string(),
-            params: vec![GetStatusParams {
-                intent_hash: intent_hash.to_string(),
-            }],
-        };
-
-        let response = Client::new()
-            .post(INTENTS_API_URL)
-            .header("Content-Type", "application/json")
-            .connect_timeout(Duration::from_secs(5))
-            .body(serde_json::to_string(&request)?.as_bytes())
-            .send()?;
-
-        if response.status() != 200 {
-            eprintln!("get_status returned status {}, retrying...", response.status());
-            continue;
+        let mut req = Client::new()
+            .get(&url)
+            .connect_timeout(Duration::from_secs(10));
+        if let Some(token) = jwt {
+            req = req.header("Authorization", format!("Bearer {}", token).as_str());
         }
-
-        let body = response.body()?;
-        let json_response: JsonRpcResponse<GetStatusResult> = serde_json::from_slice(&body)?;
-
-        if let Some(result) = json_response.result {
-            eprintln!("Intent status (attempt {}): {}", attempt + 1, result.status);
-
-            match result.status.as_str() {
-                "SETTLED" => return Ok(true),
-                "NOT_FOUND_OR_NOT_VALID_ANYMORE" | "NOT_FOUND_OR_NOT_VALID" | "FAILED" => {
-                    return Ok(false);
+        match req.send() {
+            Ok(response) => {
+                if response.status() / 100 != 2 {
+                    eprintln!("1Click status poll attempt {}: HTTP {}", attempt + 1, response.status());
+                    continue;
                 }
-                _ => {} // Continue polling
+
+                match response.body() {
+                    Ok(body) => {
+                        match serde_json::from_slice::<OneClickStatusResponse>(&body) {
+                            Ok(status_resp) => {
+                                eprintln!("1Click status (attempt {}): {}", attempt + 1, status_resp.status);
+
+                                match status_resp.status.as_str() {
+                                    "SUCCESS" | "FAILED" | "REFUNDED" => return Ok(status_resp),
+                                    _ => {} // Continue polling
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("1Click status parse error (attempt {}): {}", attempt + 1, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("1Click status body read error (attempt {}): {}", attempt + 1, e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("1Click status request error (attempt {}): {}", attempt + 1, e);
             }
         }
     }
 
-    Ok(false) // Timeout
-}
-
-fn withdraw_tokens(
-    signer_id: &str,
-    private_key: &str,
-    token: &str,
-    receiver_id: &str,
-    amount: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    // IMPORTANT: ft_withdraw uses token WITHOUT "nep141:" prefix
-    // (unlike token_diff which uses WITH prefix)
-    // https://docs.near-intents.org/near-intents/market-makers/bus/solver-relay
-
-    // Strip "nep141:" prefix if present
-    let token_without_prefix = if token.starts_with("nep141:") {
-        &token[7..]
-    } else {
-        token
-    };
-
-    // Build withdraw intent message
-    let intent_message = IntentMessage {
-        signer_id: signer_id.to_string(),
-        deadline: get_deadline_180s(),
-        intents: vec![IntentAction::FtWithdraw {
-            token: token_without_prefix.to_string(),
-            receiver_id: receiver_id.to_string(),
-            amount: amount.to_string(),
-        }],
-    };
-
-    let message_str = serde_json::to_string(&intent_message)?;
-    // Add space after each colon (to match Python format)
-    let message_str = message_str.replace("\":", "\": ");
-
-    eprintln!("📝 Withdraw message to sign:");
-    eprintln!("{}", message_str);
-    eprintln!("   Length: {} chars", message_str.len());
-
-    // Generate nonce
-    let nonce = generate_nonce();
-
-    // Sign the intent
-    let signature = sign_intent(&message_str, &nonce, private_key)?;
-
-    // Publish withdraw intent
-    let params = PublishIntentParams {
-        signed_data: SignedData {
-            payload: Payload {
-                message: message_str,
-                nonce: nonce.clone(),
-                recipient: INTENTS_CONTRACT.to_string(),
-            },
-            standard: "nep413".to_string(),
-            signature: format!("ed25519:{}", signature),
-            public_key: derive_public_key(private_key)?,
-        },
-        quote_hashes: None,
-    };
-
-    let request = JsonRpcRequest {
-        id: 1,
-        jsonrpc: "2.0".to_string(),
-        method: "publish_intent".to_string(),
-        params: vec![params],
-    };
-
-    eprintln!("📤 Publishing withdraw intent to: {}", INTENTS_API_URL);
-    eprintln!("   Method: publish_intent (withdraw)");
-    eprintln!("   Signer: {}", signer_id);
-    eprintln!("   Token: {}", token);
-    eprintln!("   Receiver: {}", receiver_id);
-    eprintln!("   Amount: {}", amount);
-
-    let request_json = serde_json::to_string_pretty(&request)?;
-    eprintln!("📦 Request body (first 2000 chars):\n{}", &request_json.chars().take(2000).collect::<String>());
-
-    let response = Client::new()
-        .post(INTENTS_API_URL)
-        .header("Content-Type", "application/json")
-        .connect_timeout(Duration::from_secs(10))
-        .body(serde_json::to_string(&request)?.as_bytes())
-        .send()?;
-
-    if response.status() != 200 {
-        eprintln!("❌ Withdraw API returned status: {}", response.status());
-        return Err(format!("Withdraw API returned status {}", response.status()).into());
-    }
-
-    let body = response.body()?;
-
-    // Debug: print response body
-    let body_str = String::from_utf8_lossy(&body);
-    eprintln!("📥 Withdraw intent response (first 1000 chars): {}", &body_str.chars().take(1000).collect::<String>());
-
-    let json_response: JsonRpcResponse<PublishIntentResult> = serde_json::from_slice(&body)
-        .map_err(|e| format!("Failed to parse withdraw response: {}. Body: {}", e, body_str))?;
-
-    if let Some(error) = json_response.error {
-        eprintln!("❌ Withdraw API returned error object: {:?}", error);
-        return Err(format!("Withdraw API error: {}", error.message).into());
-    }
-
-    let result = json_response.result.ok_or("No result from withdraw")?;
-
-    eprintln!("📊 Withdraw intent result: status={}, intent_hash={:?}", result.status, result.intent_hash);
-
-    let intent_hash = result.intent_hash.ok_or("No intent_hash for withdraw")?;
-
-    // Wait for withdrawal settlement (120 * 0.25s = 30 seconds timeout - same as swap)
-    wait_for_settlement_with_timeout(&intent_hash, 120)
+    // Timeout — return processing status
+    Ok(OneClickStatusResponse {
+        status: "PROCESSING".to_string(),
+        swap_details: None,
+    })
 }
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
-fn generate_nonce() -> String {
-    use sha2::{Digest, Sha256};
+/// Format a deadline as ISO 8601 UTC string, `seconds_from_now` seconds in the future.
+/// Uses Howard Hinnant's civil_from_days algorithm for correct leap year handling.
+fn get_deadline_iso8601(seconds_from_now: u64) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let timestamp = SystemTime::now()
+    let total_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_nanos()
-        .to_string();
+        .as_secs()
+        + seconds_from_now;
 
-    let mut hasher = Sha256::new();
-    hasher.update(timestamp.as_bytes());
-    let result = hasher.finalize();
+    let days = (total_secs / 86400) as i64;
+    let time_of_day = total_secs % 86400;
 
-    base64::encode(result)
-}
+    // Howard Hinnant's algorithm (basis of C++20 chrono / Rust chrono)
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
 
-fn get_deadline_180s() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let now_plus_180 = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() + 180;
-
-    // Convert to ISO 8601 format: YYYY-MM-DDTHH:MM:SS.000Z
-    // Simplified calculation (assumes Unix epoch)
-    let total_seconds = now_plus_180;
-    let seconds = total_seconds % 60;
-    let total_minutes = total_seconds / 60;
-    let minutes = total_minutes % 60;
-    let total_hours = total_minutes / 60;
-    let hours = total_hours % 24;
-    let total_days = total_hours / 24;
-
-    // Days since 1970-01-01
-    // Simplified: doesn't account for leap years, good enough for deadlines
-    let year = 1970 + (total_days / 365);
-    let day_of_year = total_days % 365;
-    let month = (day_of_year / 30) + 1; // Approximate
-    let day = (day_of_year % 30) + 1;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
 
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z",
-        year, month, day, hours, minutes, seconds
+        y, m, d, hours, minutes, seconds
     )
-}
-
-fn sign_intent(
-    message: &str,
-    nonce: &str,
-    private_key: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    // Remove "ed25519:" prefix if present
-    let key_base58 = if private_key.starts_with("ed25519:") {
-        &private_key[8..]
-    } else {
-        private_key
-    };
-
-    let (signature, _public_key) =
-        crypto::sign_nep413_intent(message, nonce, INTENTS_CONTRACT, key_base58)?;
-
-    Ok(signature)
-}
-
-fn derive_public_key(private_key: &str) -> Result<String, Box<dyn std::error::Error>> {
-    // Remove "ed25519:" prefix if present
-    let key_base58 = if private_key.starts_with("ed25519:") {
-        &private_key[8..]
-    } else {
-        private_key
-    };
-
-    // Sign a dummy message to get the public key
-    let dummy_nonce = base64::encode(&[0u8; 32]);
-    let (_signature, public_key) =
-        crypto::sign_nep413_intent("{}", &dummy_nonce, INTENTS_CONTRACT, key_base58)?;
-
-    Ok(format!("ed25519:{}", public_key))
 }

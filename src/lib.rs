@@ -1,8 +1,7 @@
-/// NEAR Intents Ark - WASI worker for off-chain swap execution
+/// NEAR Intents Ark - WASI worker for off-chain swap execution via 1Click API
 ///
 /// This library provides modules for:
 /// - NEAR transaction signing and sending (near_tx)
-/// - NEP-413 cryptographic signing (crypto)
 
-pub mod crypto;
+#[allow(dead_code, deprecated)]
 pub mod near_tx;

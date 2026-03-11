@@ -54,11 +54,11 @@ enum StorageKey {
 trait OutLayer {
     fn request_execution(
         &mut self,
-        code_source: near_sdk::serde_json::Value,
-        resource_limits: near_sdk::serde_json::Value,
-        input_data: String,
+        source: near_sdk::serde_json::Value,
+        resource_limits: Option<near_sdk::serde_json::Value>,
+        input_data: Option<String>,
         secrets_ref: Option<near_sdk::serde_json::Value>,
-        response_format: String,
+        response_format: Option<String>,
         payer_account_id: Option<AccountId>,
     );
 }
@@ -279,7 +279,7 @@ impl Contract {
         );
 
         // Call OutLayer
-        let code_source = near_sdk::serde_json::json!({
+        let source = near_sdk::serde_json::json!({
             "GitHub": {
                 "repo": WASI_REPO,
                 "commit": WASI_COMMIT,
@@ -303,11 +303,11 @@ impl Contract {
             .with_attached_deposit(NearToken::from_yoctonear(MIN_DEPOSIT))
             .with_unused_gas_weight(1)
             .request_execution(
-                code_source,
-                resource_limits,
-                input_data,
+                source,
+                Some(resource_limits),
+                Some(input_data),
                 Some(secrets_ref),
-                "Json".to_string(),
+                Some("Json".to_string()),
                 Some(env::current_account_id()), // Refund NEAR to contract, not user
             )
             .then(

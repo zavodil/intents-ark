@@ -1,5 +1,7 @@
 # NEAR Intents Swap via OutLayer
 
+> **[Full documentation](https://outlayer.fastnear.com/docs/examples#intents-ark)** on the OutLayer dashboard.
+
 This project implements token swaps using **NEAR Intents** protocol, executed off-chain via **NEAR OutLayer** platform.
 
 ## Architecture
