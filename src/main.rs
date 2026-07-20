@@ -119,6 +119,11 @@ struct OneClickSwapDetails {
 const ONECLICK_BASE_URL: &str = "https://1click.chaindefuser.com";
 const INTENTS_CONTRACT: &str = "intents.near";
 
+/// Only this contract is allowed to invoke swaps. Checked against NEAR_PREDECESSOR_ID,
+/// which the worker injects from the on-chain receipt (receiver == OutLayer contract) and
+/// therefore cannot be forged via input. Set this to your deployed swap contract account.
+const AUTHORIZED_CALLER: &str = "v1.publishintent.near";
+
 // ============================================================================
 // Test Functions
 // ============================================================================
@@ -270,6 +275,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             eprintln!("Processing swap for {}: {} {} -> {} {}",
                 sender_id, amount_in, token_in, min_amount_out, token_out);
+
+            // SECURITY: only AUTHORIZED_CALLER may trigger a swap. NEAR_PREDECESSOR_ID is
+            // injected by the worker from the on-chain receipt whose receiver is the OutLayer
+            // contract, so it reflects the REAL caller of request_execution and cannot be
+            // forged via input. A direct call to OutLayer by anyone else carries their own
+            // predecessor and is rejected here — this stops an attacker from invoking this
+            // exact (code-pinned) WASM with crafted input to move the contract's funds while
+            // bypassing the contract's on-chain checks (token whitelist, deposit backing,
+            // slippage). Compared against a trusted constant, never against input.
+            let predecessor = env::var("NEAR_PREDECESSOR_ID").unwrap_or_default();
+            if predecessor != AUTHORIZED_CALLER {
+                eprintln!(
+                    "Rejected unauthorized swap: predecessor='{}', expected '{}'",
+                    predecessor, AUTHORIZED_CALLER
+                );
+                let output = Output {
+                    success: false,
+                    amount_out: None,
+                    error_message: Some(format!(
+                        "Unauthorized caller: this swap may only be invoked by {} (predecessor was '{}')",
+                        AUTHORIZED_CALLER, predecessor
+                    )),
+                    intent_hash: None,
+                };
+                print!("{}", serde_json::to_string(&output)?);
+                io::stdout().flush()?;
+                return Ok(());
+            }
 
             let swap_contract_private_key = match env::var("SWAP_CONTRACT_PRIVATE_KEY") {
                 Ok(key) => key,
