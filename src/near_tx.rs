@@ -85,7 +85,7 @@ pub fn view(
     method_name: &str,
     args: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    eprintln!("🔍 View call: {}.{}", contract_id, method_name);
+    eprintln!("View call: {}.{}", contract_id, method_name);
 
     let args_base64 = base64::encode(args.as_bytes());
 
@@ -150,7 +150,7 @@ pub fn call(
     gas: u64,
     deposit: u128,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    eprintln!("📤 Call: {}.{}", contract_id, method_name);
+    eprintln!("Call: {}.{}", contract_id, method_name);
 
     send_function_call_transaction(
         rpc_url,
@@ -204,7 +204,7 @@ pub fn ft_transfer_call(
     amount: &str,
     msg: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    eprintln!("🔐 Signing ft_transfer_call transaction...");
+    eprintln!("Signing ft_transfer_call transaction...");
 
     let args = serde_json::json!({
         "receiver_id": receiver_id,
@@ -260,7 +260,7 @@ fn send_function_call_transaction(
     // Get nonce and block hash from RPC
     let (nonce, block_hash) = get_access_key_info(rpc_url, signer_account_id, &verifying_key)?;
 
-    eprintln!("📝 Nonce: {}, Block hash: {}", nonce, hex::encode(&block_hash));
+    eprintln!("Nonce: {}, Block hash: {}", nonce, hex::encode(&block_hash));
 
     // Build transaction
     let transaction = Transaction {
@@ -463,7 +463,7 @@ fn get_access_key_info(
     let body_str = String::from_utf8(body.clone())
         .unwrap_or_else(|_| format!("{:?}", body));
 
-    eprintln!("📥 RPC Response (first 500 chars): {}", &body_str.chars().take(500).collect::<String>());
+    eprintln!("RPC Response (first 500 chars): {}", &body_str.chars().take(500).collect::<String>());
 
     // Parse as generic JSON first to handle nested structure
     let json_value: serde_json::Value = serde_json::from_slice(&body)
@@ -516,7 +516,7 @@ fn send_transaction(
         params: vec![tx_base64],
     };
 
-    eprintln!("📡 Sending transaction to NEAR RPC...");
+    eprintln!("Sending transaction to NEAR RPC...");
 
     let response = Client::new()
         .post(rpc_url)
@@ -536,7 +536,7 @@ fn send_transaction(
 
     // Debug: print response for analysis
     let body_str = String::from_utf8_lossy(&body);
-    eprintln!("📥 Transaction response (first 2000 chars): {}", &body_str.chars().take(2000).collect::<String>());
+    eprintln!("Transaction response (first 2000 chars): {}", &body_str.chars().take(2000).collect::<String>());
 
     let json_response: JsonRpcResponse<serde_json::Value> = serde_json::from_slice(&body)?;
 
@@ -554,7 +554,7 @@ fn send_transaction(
         .ok_or("No transaction hash in response")?
         .to_string();
 
-    eprintln!("📋 Transaction broadcast: {}", tx_hash);
+    eprintln!("Transaction broadcast: {}", tx_hash);
 
     // Parse the full execution outcome to check for failures
     let outcome: FinalExecutionOutcomeView = serde_json::from_value(result.clone())
@@ -564,7 +564,7 @@ fn send_transaction(
     match &outcome.status {
         FinalExecutionStatus::Failure { failure: err } => {
             let error_msg = format_tx_error(err);
-            eprintln!("❌ Transaction FAILED (top-level): {}", error_msg);
+            eprintln!("Transaction FAILED (top-level): {}", error_msg);
             return Err(format!("Transaction failed: {}", error_msg).into());
         }
         FinalExecutionStatus::NotStarted => {
@@ -576,14 +576,14 @@ fn send_transaction(
             return Err("Transaction still in progress".into());
         }
         FinalExecutionStatus::SuccessValue { .. } => {
-            eprintln!("📊 Top-level status: SuccessValue");
+            eprintln!("Top-level status: SuccessValue");
         }
     }
 
     // Check transaction_outcome status
     if let ExecutionStatusView::Failure { failure: err } = &outcome.transaction_outcome.outcome.status {
         let error_msg = format_tx_error(err);
-        eprintln!("❌ Transaction outcome FAILED: {}", error_msg);
+        eprintln!("Transaction outcome FAILED: {}", error_msg);
         return Err(format!("Transaction outcome failed: {}", error_msg).into());
     }
 
@@ -591,11 +591,11 @@ fn send_transaction(
     for (i, receipt_outcome) in outcome.receipts_outcome.iter().enumerate() {
         if let ExecutionStatusView::Failure { failure: err } = &receipt_outcome.outcome.status {
             let error_msg = format_tx_error(err);
-            eprintln!("❌ Receipt {} FAILED: {}", i, error_msg);
+            eprintln!("Receipt {} FAILED: {}", i, error_msg);
 
             // Print logs if any
             if !receipt_outcome.outcome.logs.is_empty() {
-                eprintln!("📋 Receipt logs:");
+                eprintln!("Receipt logs:");
                 for log in &receipt_outcome.outcome.logs {
                     eprintln!("  {}", log);
                 }
@@ -605,7 +605,7 @@ fn send_transaction(
         }
     }
 
-    eprintln!("✅ Transaction successful: {}", tx_hash);
+    eprintln!("Transaction successful: {}", tx_hash);
 
     Ok(tx_hash)
 }

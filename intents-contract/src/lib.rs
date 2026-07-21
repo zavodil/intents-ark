@@ -32,6 +32,10 @@ const OUTLAYER_CONTRACT_ID: &str = "outlayer.near";
 const WASI_REPO: &str = "https://github.com/zavodil/intents-ark";
 const WASI_COMMIT: &str = "main";
 
+/// Slippage tolerance (basis points, 100 = 1%) used when the swap message omits one.
+/// Matches the value the WASI hardcoded previously, so existing callers are unaffected.
+const DEFAULT_SLIPPAGE_TOLERANCE_BPS: u32 = 100;
+
 // ============================================================================
 // Storage Keys
 // ============================================================================
@@ -180,6 +184,7 @@ impl Contract {
             TokenReceiverMessage::Swap {
                 token_out,
                 min_amount_out,
+                slippage_tolerance,
             } => {
                 // Get token_out config ONCE (gas optimization)
                 let token_out_config = self
@@ -191,6 +196,21 @@ impl Contract {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
 
+                // Slippage tolerance is caller-supplied and forwarded to the 1Click quote as-is.
+                // It cannot be used to bypass the caller's own `min_amount_out`: a wider
+                // tolerance *lowers* the quote's worst-case output, and the WASI rejects the
+                // swap pre-deposit unless `quote.min_amount_out >= min_amount_out` — so a wide
+                // tolerance makes rejection more likely, not less. The bound below is therefore
+                // plain sanity, keeping nonsensical values from reaching 1Click, and it fails
+                // inside the caller's own transaction before any OutLayer fee is spent.
+                let slippage_tolerance_bps =
+                    slippage_tolerance.unwrap_or(DEFAULT_SLIPPAGE_TOLERANCE_BPS);
+                assert!(
+                    slippage_tolerance_bps < 10_000,
+                    "slippage_tolerance must be below 10000 basis points (100%), got {}",
+                    slippage_tolerance_bps
+                );
+
                 // Initiate swap via OutLayer - returns promise
                 self.internal_initiate_swap(
                     sender_id,
@@ -200,6 +220,7 @@ impl Contract {
                     token_out_config,
                     amount.0,
                     min_amount_out_value,
+                    slippage_tolerance_bps,
                 )
             }
         }
@@ -214,6 +235,7 @@ impl Contract {
         token_out_config: TokenConfig,
         amount_in: Balance,
         min_amount_out: Balance,
+        slippage_tolerance: u32,
     ) {
         // Validate
         assert_ne!(token_in, token_out, "Cannot swap token to itself");
@@ -234,7 +256,7 @@ impl Contract {
         let amount_after_fee = amount_in.saturating_sub(fee_amount);
 
         log!(
-            "💰 Fee calculation: amount={}, fee_bp={}, fee={}, after_fee={}",
+            "Fee calculation: amount={}, fee_bp={}, fee={}, after_fee={}",
             amount_in,
             self.fee_basis_points,
             fee_amount,
@@ -265,11 +287,12 @@ impl Contract {
             "amount_in": amount_after_fee.to_string(),  // Amount after fee
             "min_amount_out": min_amount_out.to_string(),
             "swap_contract_id": env::current_account_id().to_string(),
+            "slippage_tolerance": slippage_tolerance,
         })
         .to_string();
 
         log!(
-            "🔄 Requesting swap #{} via OutLayer: {} {} → {} {} (min: {})",
+            "Requesting swap #{} via OutLayer: {} {} -> {} {} (min: {})",
             request_id,
             amount_in,
             token_in,
@@ -342,7 +365,7 @@ impl Contract {
         self.pending_swaps.remove(&request_id);
 
         // Debug: log what we received
-        log!("🔍 on_execution_response callback: request_id={}", request_id);
+        log!("on_execution_response callback: request_id={}", request_id);
         match &result {
             Ok(Some(value)) => log!("   Result: Ok(Some(Value)) - {}", value),
             Ok(None) => log!("   Result: Ok(None)"),
@@ -351,13 +374,13 @@ impl Contract {
 
         match result {
             Ok(Some(json_value)) => {
-                log!("✅ Execution #{} completed successfully", request_id);
+                log!("Execution #{} completed successfully", request_id);
 
                 // Parse SwapResponse directly from the JSON value returned by outlayer
                 match serde_json::from_value::<SwapResponse>(json_value) {
                             Ok(swap_response) => {
                                 log!(
-                                    "📊 Swap data: amount_out={:?}, intent_hash={:?}",
+                                    "Swap data: amount_out={:?}, intent_hash={:?}",
                                     swap_response.amount_out,
                                     swap_response.intent_hash
                                 );
@@ -366,20 +389,35 @@ impl Contract {
                                     if let Some(amount_out_str) = swap_response.amount_out {
                                         let amount_out: Balance = amount_out_str.parse().unwrap_or(0);
 
-                                        // Validate minimum output amount
-                                        assert!(
-                                            amount_out >= min_amount_out.0,
-                                            "Output amount {} is less than minimum {}",
-                                            amount_out,
-                                            min_amount_out.0
-                                        );
+                                        // A shortfall is prevented BEFORE the swap, not here: the WASI
+                                        // rejects the quote unless `quote.min_amount_out >= min_amount_out`,
+                                        // and 1Click guarantees delivery at or above that worst case. This
+                                        // check is therefore redundant, and it must NOT panic — a panic
+                                        // would make ft_resolve_transfer refund token_in out of the shared
+                                        // NEP-141 pool while the swapped token_out sits on this contract,
+                                        // so the pool would pay twice. Paying out the delivered amount is
+                                        // the lesser evil: the funds are this user's own swap proceeds.
+                                        //
+                                        // NOTE: the redundancy is earned by that WASI pre-check. Do not
+                                        // weaken it back to comparing against `quote.amount_out` without
+                                        // restoring an on-chain guarantee here.
+                                        if amount_out < min_amount_out.0 {
+                                            log!(
+                                                "Swap #{} delivered {}, BELOW the requested minimum {} — \
+                                                 1Click violated its quoted worst case. Paying out the \
+                                                 delivered amount anyway; investigate.",
+                                                request_id,
+                                                amount_out,
+                                                min_amount_out.0
+                                            );
+                                        }
 
                                         // Collect fee (already calculated in internal_initiate_swap)
                                         let current_fees = self.collected_fees.get(&token_in).unwrap_or(0);
                                         self.collected_fees.insert(&token_in, &(current_fees + fee_amount.0));
 
                                         log!(
-                                            "💰 Fee collected: {} {} (total collected: {})",
+                                            "Fee collected: {} {} (total collected: {})",
                                             fee_amount.0,
                                             token_in,
                                             current_fees + fee_amount.0
@@ -399,7 +437,7 @@ impl Contract {
                                             );
 
                                         log!(
-                                            "🎉 Swap completed: {} {} -> {} {} (fee: {})",
+                                            "Swap completed: {} {} -> {} {} (fee: {})",
                                             amount_in.0,
                                             token_in,
                                             amount_out,
@@ -412,11 +450,35 @@ impl Contract {
                                     }
                                 }
 
-                                // Swap failed
-                                env::panic_str(&format!(
-                                    "Swap failed: {}",
-                                    swap_response.error_message.unwrap_or_else(|| "Unknown error".to_string())
-                                ));
+                                // Swap failed.
+                                let reason = swap_response
+                                    .error_message
+                                    .unwrap_or_else(|| "Unknown error".to_string());
+
+                                if swap_response.funds_deposited {
+                                    // Case B: token_in already left the contract's NEP-141 balance
+                                    // into intents.near. Panicking here would make ft_resolve_transfer
+                                    // pay the user's refund out of the shared NEP-141 pool (other users'
+                                    // in-flight funds + fees) while this user's own token_in sits in the
+                                    // contract's intents balance. Report "all tokens used" instead, and
+                                    // record the incident in a log for manual operator recovery — the
+                                    // log line below carries everything needed to make the user whole.
+                                    log!(
+                                        "STUCK SWAP #{} failed AFTER deposit — token_in is in the contract's \
+                                         intents balance and requires operator recovery (sender={}, token_in={}, \
+                                         amount_after_fee≈{}). No pool refund paid. Reason: {}",
+                                        request_id,
+                                        sender_id,
+                                        token_in,
+                                        amount_in.0.saturating_sub(fee_amount.0),
+                                        reason
+                                    );
+                                    return Some(U128(0));
+                                }
+
+                                // Case A: funds never left the contract's NEP-141 balance, so the
+                                // standard NEP-141 refund is exact and safe. Panic to trigger it.
+                                env::panic_str(&format!("Swap failed: {}", reason));
                             }
                             Err(parse_err) => {
                                 env::panic_str(&format!("Failed to parse swap response: {}", parse_err));

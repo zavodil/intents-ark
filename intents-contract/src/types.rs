@@ -22,6 +22,14 @@ pub struct SwapResponse {
     pub amount_out: Option<String>,
     pub error_message: Option<String>,
     pub intent_hash: Option<String>,
+    /// True once token_in has left the contract's NEP-141 balance into intents.near.
+    /// On a failed swap this means the funds are NOT recoverable via the standard NEP-141
+    /// refund (a panic would pay that refund out of the shared pool while the user's own
+    /// tokens sit in the contract's intents balance); the incident is logged for manual
+    /// operator recovery instead. Defaults to false for backward compatibility, so an older
+    /// WASI that does not emit this field keeps the previous refund-on-panic behaviour.
+    #[serde(default)]
+    pub funds_deposited: bool,
 }
 
 /// Swap request stored in contract
@@ -44,6 +52,14 @@ pub enum TokenReceiverMessage {
         token_out: TokenId,
         #[serde(default)]
         min_amount_out: Option<String>,
+        /// Slippage tolerance in basis points (100 = 1%) forwarded to the 1Click quote.
+        /// Optional: when absent, `DEFAULT_SLIPPAGE_TOLERANCE_BPS` is used, so callers that
+        /// predate this field keep the previous behaviour unchanged. A wider tolerance cannot
+        /// be used to bypass `min_amount_out`: it lowers the quote's worst-case output, which
+        /// makes the WASI's pre-deposit check reject sooner. Only a sanity bound (< 100%) is
+        /// enforced, in `ft_on_transfer`.
+        #[serde(default)]
+        slippage_tolerance: Option<u32>,
     },
 }
 

@@ -26,6 +26,11 @@ enum Input {
         amount_in: String,
         min_amount_out: String,
         swap_contract_id: String,
+        /// Slippage tolerance in basis points (100 = 1%), chosen by the caller and forwarded
+        /// to the 1Click quote. Absent for callers that predate the field, in which case
+        /// `DEFAULT_SLIPPAGE_TOLERANCE_BPS` reproduces the previously hardcoded behaviour.
+        #[serde(default)]
+        slippage_tolerance: Option<u32>,
     },
 }
 
@@ -36,6 +41,12 @@ struct Output {
     error_message: Option<String>,
     /// deposit_address from 1Click (for tracking), or intent_hash from swap_details
     intent_hash: Option<String>,
+    /// True once token_in has left the swap contract's NEP-141 balance into intents.near
+    /// (i.e. step 3 succeeded). On failure this tells the contract NOT to pay a refund out
+    /// of its NEP-141 balance (the funds now live in the contract's intents balance and must
+    /// be recovered by the operator), avoiding a pool-funded double refund.
+    #[serde(default)]
+    funds_deposited: bool,
 }
 
 // ============================================================================
@@ -74,7 +85,6 @@ struct OneClickQuote {
     #[allow(dead_code)]
     amount_in: String,
     amount_out: String,
-    #[allow(dead_code)]
     min_amount_out: String,
     #[allow(dead_code)]
     deadline: String,
@@ -124,6 +134,10 @@ const INTENTS_CONTRACT: &str = "intents.near";
 /// therefore cannot be forged via input. Set this to your deployed swap contract account.
 const AUTHORIZED_CALLER: &str = "v1.publishintent.near";
 
+/// Slippage tolerance (basis points, 100 = 1%) used when the input omits one. Matches the
+/// value that was hardcoded before it became caller-supplied, so older inputs behave the same.
+const DEFAULT_SLIPPAGE_TOLERANCE_BPS: u32 = 100;
+
 // ============================================================================
 // Test Functions
 // ============================================================================
@@ -137,6 +151,10 @@ struct TestStorageOutput {
     error: Option<String>,
 }
 
+/// Retained for reference only — the `TestStorage` input path that called this is disabled
+/// (it signed `storage_deposit` with the swap contract's key against an input-supplied
+/// contract, with no caller check).
+#[allow(dead_code)]
 fn handle_test_storage(token_contract: &str) -> Result<(), Box<dyn std::error::Error>> {
     let swap_contract_id = env::var("SWAP_CONTRACT_ID")
         .map_err(|_| "Missing SWAP_CONTRACT_ID env var")?;
@@ -262,8 +280,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match input {
         Input::TestStorage { ref token_contract, .. } => {
-            eprintln!("Test mode: checking storage for {}", token_contract);
-            handle_test_storage(token_contract)?;
+            // DISABLED in prod
+            eprintln!(
+                "Rejected test_storage: path is disabled (token_contract='{}')",
+                token_contract
+            );
+            let output = Output {
+                success: false,
+                amount_out: None,
+                error_message: Some("test_storage is disabled".to_string()),
+                intent_hash: None,
+                funds_deposited: false,
+            };
+            print!("{}", serde_json::to_string(&output)?);
+            io::stdout().flush()?;
+            return Ok(());
         }
         Input::Swap {
             ref sender_id,
@@ -272,6 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ref amount_in,
             ref min_amount_out,
             ref swap_contract_id,
+            slippage_tolerance,
         } => {
             eprintln!("Processing swap for {}: {} {} -> {} {}",
                 sender_id, amount_in, token_in, min_amount_out, token_out);
@@ -298,6 +330,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         AUTHORIZED_CALLER, predecessor
                     )),
                     intent_hash: None,
+                    funds_deposited: false,
+                };
+                print!("{}", serde_json::to_string(&output)?);
+                io::stdout().flush()?;
+                return Ok(());
+            }
+
+            // SECURITY (defense-in-depth): swap_contract_id comes from input and is used as
+            // the signing account (SWAP_CONTRACT_PRIVATE_KEY) and as refund_to/recipient in
+            // 1Click. The private key belongs to AUTHORIZED_CALLER, so signing on behalf of
+            // any other account is nonsensical and must never happen even if the predecessor
+            // check is ever bypassed. Pin it to the same trusted constant.
+            if swap_contract_id != AUTHORIZED_CALLER {
+                eprintln!(
+                    "Rejected swap: swap_contract_id='{}', expected '{}'",
+                    swap_contract_id, AUTHORIZED_CALLER
+                );
+                let output = Output {
+                    success: false,
+                    amount_out: None,
+                    error_message: Some(format!(
+                        "Invalid swap_contract_id: expected {}, got '{}'",
+                        AUTHORIZED_CALLER, swap_contract_id
+                    )),
+                    intent_hash: None,
+                    funds_deposited: false,
                 };
                 print!("{}", serde_json::to_string(&output)?);
                 io::stdout().flush()?;
@@ -312,6 +370,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         amount_out: None,
                         error_message: Some("SWAP_CONTRACT_PRIVATE_KEY not found in environment".to_string()),
                         intent_hash: None,
+                        funds_deposited: false,
                     };
                     print!("{}", serde_json::to_string(&output)?);
                     io::stdout().flush()?;
@@ -327,6 +386,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 min_amount_out,
                 swap_contract_id,
                 &swap_contract_private_key,
+                slippage_tolerance.unwrap_or(DEFAULT_SLIPPAGE_TOLERANCE_BPS),
             ) {
                 Ok(result) => {
                     print!("{}", serde_json::to_string(&result)?);
@@ -334,11 +394,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     eprintln!("Swap execution failed: {:?}", e);
+                    // execute_swap only returns Err on PRE-deposit failures (see its body: every
+                    // path after the intents deposit returns Ok(Output{funds_deposited:true})).
+                    // So an Err here always means funds never left the contract → safe to refund.
                     let output = Output {
                         success: false,
                         amount_out: None,
                         error_message: Some(format!("Internal error: {}", e)),
                         intent_hash: None,
+                        funds_deposited: false,
                     };
                     print!("{}", serde_json::to_string(&output)?);
                     io::stdout().flush()?;
@@ -358,6 +422,7 @@ fn execute_swap(
     min_amount_out: &str,
     swap_contract_id: &str,
     swap_contract_private_key: &str,
+    slippage_tolerance: u32,
 ) -> Result<Output, Box<dyn std::error::Error>> {
     let oneclick_jwt = env::var("ONECLICK_JWT").ok().filter(|s| !s.is_empty());
 
@@ -372,28 +437,34 @@ fn execute_swap(
         token_out,
         amount_in,
         swap_contract_id,
+        slippage_tolerance,
     )?;
 
     let deposit_address = &quote_resp.quote.deposit_address;
     let amount_out = &quote_resp.quote.amount_out;
+    let quote_min_amount_out = &quote_resp.quote.min_amount_out;
 
-    eprintln!("1Click quote: deposit_address={}, amount_out={}", deposit_address, amount_out);
+    eprintln!("1Click quote: deposit_address={}, amount_out={}, min_amount_out={}",
+        deposit_address, amount_out, quote_min_amount_out);
 
-    // Step 2: Validate min_amount_out
-    let amount_out_num: u128 = amount_out.parse()
-        .map_err(|_| "Failed to parse amount_out")?;
+    // Step 2: Validate min_amount_out against the quote's worst-case delivery
+    // (quote.min_amount_out = amount_out minus 1Click's slippage tolerance),
+    // so the delivered amount can never end up below the user's minimum.
+    let quote_min_amount_out_num: u128 = quote_min_amount_out.parse()
+        .map_err(|_| "Failed to parse quote min_amount_out")?;
     let min_amount_out_num: u128 = min_amount_out.parse()
         .map_err(|_| "Failed to parse min_amount_out")?;
 
-    if amount_out_num < min_amount_out_num {
+    if quote_min_amount_out_num < min_amount_out_num {
         return Ok(Output {
             success: false,
             amount_out: None,
             error_message: Some(format!(
-                "Quote amount_out ({}) is less than min_amount_out ({})",
-                amount_out, min_amount_out
+                "Quote worst-case output ({}) is less than min_amount_out ({}); expected output was {}",
+                quote_min_amount_out, min_amount_out, amount_out
             )),
             intent_hash: None,
+            funds_deposited: false,
         });
     }
 
@@ -426,6 +497,7 @@ fn execute_swap(
                         sender_id, token_out_contract
                     )),
                     intent_hash: None,
+                    funds_deposited: false,
                 });
             }
             eprintln!("Storage deposit verified for {}", sender_id);
@@ -453,6 +525,12 @@ fn execute_swap(
 
     eprintln!("Deposit tx: {}", deposit_tx);
 
+    // From this point on, token_in has LEFT the swap contract's NEP-141 balance and lives in
+    // the contract's intents.near balance. Every failure path below must therefore return
+    // Ok(Output{funds_deposited:true}) rather than Err — the contract keys its refund decision
+    // off this flag and must NOT pay a pool-funded NEP-141 refund for these funds.
+    let funds_deposited = true;
+
     // Step 4: mt_transfer on intents.near — move tokens to 1Click deposit address
     eprintln!("Step 4: mt_transfer {} {} to deposit address {}", amount_in, token_in, deposit_address);
 
@@ -462,7 +540,7 @@ fn execute_swap(
         "amount": amount_in,
     });
 
-    let mt_tx = near_tx::call(
+    let mt_tx = match near_tx::call(
         &rpc_url,
         swap_contract_id,
         swap_contract_private_key,
@@ -471,7 +549,25 @@ fn execute_swap(
         &mt_args.to_string(),
         100_000_000_000_000, // 100 TGas
         1,                   // 1 yoctoNEAR
-    )?;
+    ) {
+        Ok(tx) => tx,
+        Err(e) => {
+            // Deposit succeeded but the move to the 1Click deposit address failed: token_in is
+            // stranded in the contract's intents balance. Signal funds_deposited so the contract
+            // defers to operator recovery instead of refunding from the pool.
+            eprintln!("mt_transfer failed after deposit: {}", e);
+            return Ok(Output {
+                success: false,
+                amount_out: None,
+                error_message: Some(format!(
+                    "Deposit succeeded but mt_transfer to 1Click failed: {}. Funds are in the contract's intents balance and require operator recovery.",
+                    e
+                )),
+                intent_hash: None,
+                funds_deposited,
+            });
+        }
+    };
 
     eprintln!("mt_transfer tx: {}", mt_tx);
 
@@ -488,14 +584,53 @@ fn execute_swap(
 
     // Step 6: Poll 1Click status until terminal state
     eprintln!("Step 6: Polling 1Click status for deposit_address={}", deposit_address);
-    let status_resp = poll_oneclick_status(oneclick_jwt.as_deref(), deposit_address)?;
+    let status_resp = match poll_oneclick_status(oneclick_jwt.as_deref(), deposit_address) {
+        Ok(resp) => resp,
+        Err(e) => {
+            // Post-deposit: don't let a polling error become an Err (which the contract would
+            // treat as a safe-to-refund pre-deposit failure). Funds are already in flight.
+            eprintln!("Status polling failed after deposit: {}", e);
+            return Ok(Output {
+                success: false,
+                amount_out: None,
+                error_message: Some(format!(
+                    "Deposit succeeded but status polling failed: {}. Funds may be in flight or in the contract's intents balance; operator recovery required.",
+                    e
+                )),
+                intent_hash: Some(deposit_address.clone()),
+                funds_deposited,
+            });
+        }
+    };
 
     match status_resp.status.as_str() {
         "SUCCESS" => {
-            let actual_amount_out = status_resp.swap_details
+            // The delivered amount must come from 1Click's swap_details. Falling back to the
+            // quoted amount_out would hand the contract a number nobody confirmed, and the
+            // contract pays that out of its own NEP-141 balance — a pool shortfall whenever the
+            // real delivery was smaller. If 1Click reports SUCCESS without an amount, the
+            // delivery is simply unknown, so report it as unresolved rather than inventing one.
+            let actual_amount_out = match status_resp
+                .swap_details
                 .as_ref()
                 .and_then(|d| d.amount_out.clone())
-                .unwrap_or_else(|| amount_out.clone());
+            {
+                Some(delivered) => delivered,
+                None => {
+                    eprintln!("1Click reported SUCCESS without swap_details.amount_out");
+                    return Ok(Output {
+                        success: false,
+                        amount_out: None,
+                        error_message: Some(
+                            "1Click reported SUCCESS but did not report a delivered amount; \
+                             the delivery is unconfirmed and requires operator verification."
+                                .to_string(),
+                        ),
+                        intent_hash: Some(deposit_address.clone()),
+                        funds_deposited,
+                    });
+                }
+            };
 
             let intent_hash = status_resp.swap_details
                 .as_ref()
@@ -509,6 +644,7 @@ fn execute_swap(
                 amount_out: Some(actual_amount_out),
                 error_message: None,
                 intent_hash: Some(intent_hash),
+                funds_deposited,
             })
         }
         "FAILED" => Ok(Output {
@@ -516,18 +652,21 @@ fn execute_swap(
             amount_out: None,
             error_message: Some("1Click swap failed".to_string()),
             intent_hash: Some(deposit_address.clone()),
+            funds_deposited,
         }),
         "REFUNDED" => Ok(Output {
             success: false,
             amount_out: None,
             error_message: Some("1Click swap was refunded — tokens returned to wallet".to_string()),
             intent_hash: Some(deposit_address.clone()),
+            funds_deposited,
         }),
         other => Ok(Output {
             success: false,
             amount_out: None,
             error_message: Some(format!("1Click swap still processing after timeout (status: {})", other)),
             intent_hash: Some(deposit_address.clone()),
+            funds_deposited,
         }),
     }
 }
@@ -542,13 +681,14 @@ fn get_oneclick_quote(
     token_out: &str,
     amount_in: &str,
     swap_contract_id: &str,
+    slippage_tolerance: u32,
 ) -> Result<OneClickQuoteResponse, Box<dyn std::error::Error>> {
     let deadline = get_deadline_iso8601(300);
 
     let request = OneClickQuoteRequest {
         dry: false,
         swap_type: "EXACT_INPUT".to_string(),
-        slippage_tolerance: 100, // 1%
+        slippage_tolerance, // basis points, 100 = 1%; caller-supplied
         origin_asset: token_in.to_string(),
         deposit_type: "INTENTS".to_string(),
         destination_asset: token_out.to_string(),
