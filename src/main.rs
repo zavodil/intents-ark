@@ -73,21 +73,31 @@ struct OneClickQuoteRequest {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct OneClickQuoteResponse {
+    /// Spec lists this as required, but we never read it — accept its absence rather than
+    /// failing the whole quote over a field we ignore.
+    #[serde(default)]
     #[allow(dead_code)]
-    correlation_id: String,
+    correlation_id: Option<String>,
     quote: OneClickQuote,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct OneClickQuote {
-    deposit_address: String,
+    /// Per the 1Click spec this is NOT a required field: it is omitted for `dry: true`
+    /// requests. We always send `dry: false`, so it should be present — but declaring it
+    /// non-optional would turn any deviation into an opaque JSON parse error instead of a
+    /// clear one, so it is optional here and checked explicitly at the call site.
+    #[serde(default)]
+    deposit_address: Option<String>,
     #[allow(dead_code)]
     amount_in: String,
     amount_out: String,
     min_amount_out: String,
+    /// Also omitted for `dry: true` per the spec, and unused here.
+    #[serde(default)]
     #[allow(dead_code)]
-    deadline: String,
+    deadline: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     time_estimate: Option<u64>,
@@ -440,7 +450,11 @@ fn execute_swap(
         slippage_tolerance,
     )?;
 
-    let deposit_address = &quote_resp.quote.deposit_address;
+    // `dry: false` is always sent, so 1Click is expected to return a deposit address. If it
+    // does not, fail loudly here — this is still PRE-deposit, so an Err is safe to refund.
+    let deposit_address = quote_resp.quote.deposit_address.as_deref().ok_or(
+        "1Click quote returned no depositAddress (expected for a dry=false request)",
+    )?;
     let amount_out = &quote_resp.quote.amount_out;
     let quote_min_amount_out = &quote_resp.quote.min_amount_out;
 
@@ -597,7 +611,7 @@ fn execute_swap(
                     "Deposit succeeded but status polling failed: {}. Funds may be in flight or in the contract's intents balance; operator recovery required.",
                     e
                 )),
-                intent_hash: Some(deposit_address.clone()),
+                intent_hash: Some(deposit_address.to_string()),
                 funds_deposited,
             });
         }
@@ -626,7 +640,7 @@ fn execute_swap(
                              the delivery is unconfirmed and requires operator verification."
                                 .to_string(),
                         ),
-                        intent_hash: Some(deposit_address.clone()),
+                        intent_hash: Some(deposit_address.to_string()),
                         funds_deposited,
                     });
                 }
@@ -635,7 +649,7 @@ fn execute_swap(
             let intent_hash = status_resp.swap_details
                 .as_ref()
                 .and_then(|d| d.intent_hashes.first().cloned())
-                .unwrap_or_else(|| deposit_address.clone());
+                .unwrap_or_else(|| deposit_address.to_string());
 
             eprintln!("Swap completed: {} {} -> {} {}", amount_in, token_in, actual_amount_out, token_out);
 
@@ -651,21 +665,21 @@ fn execute_swap(
             success: false,
             amount_out: None,
             error_message: Some("1Click swap failed".to_string()),
-            intent_hash: Some(deposit_address.clone()),
+            intent_hash: Some(deposit_address.to_string()),
             funds_deposited,
         }),
         "REFUNDED" => Ok(Output {
             success: false,
             amount_out: None,
             error_message: Some("1Click swap was refunded — tokens returned to wallet".to_string()),
-            intent_hash: Some(deposit_address.clone()),
+            intent_hash: Some(deposit_address.to_string()),
             funds_deposited,
         }),
         other => Ok(Output {
             success: false,
             amount_out: None,
             error_message: Some(format!("1Click swap still processing after timeout (status: {})", other)),
-            intent_hash: Some(deposit_address.clone()),
+            intent_hash: Some(deposit_address.to_string()),
             funds_deposited,
         }),
     }

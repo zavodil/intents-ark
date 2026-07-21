@@ -28,9 +28,12 @@ const MIN_DEPOSIT: u128 = 50_000_000_000_000_000_000_000; // 0.05 NEAR
 /// OutLayer contract ID
 const OUTLAYER_CONTRACT_ID: &str = "outlayer.near";
 
-/// GitHub repo for WASI binary
-const WASI_REPO: &str = "https://github.com/zavodil/intents-ark";
-const WASI_COMMIT: &str = "main";
+/// OutLayer project that provides the WASI binary. Using a project instead of a GitHub
+/// repo+branch means the executed code is the version registered on-chain (the project's
+/// `active_version`), so publishing a new version is an explicit, auditable action rather
+/// than whatever happens to sit on a branch — and it cannot be served from a stale build
+/// cache keyed on a branch name.
+const WASI_PROJECT_ID: &str = "v1.publishintent.near/intents-swap";
 
 /// Slippage tolerance (basis points, 100 = 1%) used when the swap message omits one.
 /// Matches the value the WASI hardcoded previously, so existing callers are unaffected.
@@ -302,11 +305,12 @@ impl Contract {
         );
 
         // Call OutLayer
+        // `version_key: null` selects the project's active version, so publishing a new
+        // version on-chain is what rolls the executed code forward.
         let source = near_sdk::serde_json::json!({
-            "GitHub": {
-                "repo": WASI_REPO,
-                "commit": WASI_COMMIT,
-                "build_target": "wasm32-wasip2"
+            "Project": {
+                "project_id": WASI_PROJECT_ID,
+                "version_key": null
             }
         });
 
