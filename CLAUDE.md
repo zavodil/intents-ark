@@ -1,4 +1,4 @@
-# CLAUDE.md - Implementation Notes for intents-ark
+# CLAUDE.md - Implementation Notes for intents-example
 
 ## 🎯 Purpose
 This document describes critical implementation details and common pitfalls when working with NEAR Intents API and NEAR blockchain transactions. **READ THIS BEFORE MAKING CHANGES** to avoid repeating mistakes.
@@ -42,12 +42,12 @@ This document describes critical implementation details and common pitfalls when
 ┌─────────────────────────────────────────────────────────────────┐
 │ 4. Worker (event monitor):                                      │
 │    - Filters: contract_id == outlayer.near ✅ CRITICAL         │
-│    - Compiles WASI (intents-ark)                                │
+│    - Compiles WASI (intents-example)                                │
 │    - Executes with secrets (SWAP_CONTRACT_PRIVATE_KEY)          │
 └─────────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 5. WASI execution (intents-ark):                                │
+│ 5. WASI execution (intents-example):                                │
 │    - Reads swap_contract_id from input_data                     │
 │    - Uses SWAP_CONTRACT_PRIVATE_KEY to sign as v1              │
 │    - ft_transfer_call: v1 → intents.near (deposit)             │
@@ -291,8 +291,8 @@ Real RPC response when transaction fails:
 
 All reference documentation is stored in:
 ```
-/Users/alice/projects/near-offshore/wasi-examples/intents-ark/near-intents-reference/
-/Users/alice/projects/near-offshore/wasi-examples/intents-ark/near-primitives-reference/
+/Users/alice/projects/near-offshore/wasi-examples/intents-example/near-intents-reference/
+/Users/alice/projects/near-offshore/wasi-examples/intents-example/near-primitives-reference/
 ```
 
 ### near-intents-reference/
@@ -442,7 +442,7 @@ Always test with actual mainnet transactions:
 cd /Users/alice/projects/near-offshore/wasi-examples
 
 # Build
-cd intents-ark
+cd intents-example
 env RUSTFLAGS="--cfg wasmedge --cfg tokio_unstable" cargo build --target wasm32-wasip2 --release
 
 # Test with verbose output
@@ -451,8 +451,8 @@ cargo build --release
 
 cd ..
 ./wasi-test-runner/target/release/wasi-test \
-  --wasm intents-ark/target/wasm32-wasip2/release/intents-ark.wasm \
-  --input-file intents-ark/test-swap-usdc-wnear.json \
+  --wasm intents-example/target/wasm32-wasip2/release/intents-example.wasm \
+  --input-file intents-example/test-swap-usdc-wnear.json \
   --env SWAP_CONTRACT_ID=v1.publishintent.near \
   --env 'SWAP_CONTRACT_PRIVATE_KEY=ed25519:...' \
   --env 'NEAR_RPC_URL=https://rpc.mainnet.near.org' \

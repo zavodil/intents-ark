@@ -3,13 +3,13 @@
 # - 2. run test
 # - 3. find wNEAR on sender_id
 
-cd wasi-examples/intents-ark
+cd wasi-examples/intents-example
 ./build.sh
 
 cd wasi-examples/wasi-test-runner
 cargo run --release -- \
-    --wasm ../intents-ark/target/wasm32-wasip2/release/intents-ark.wasm \
-    --input-file ../intents-ark/test-swap-usdc-wnear.json \
+    --wasm ../intents-example/target/wasm32-wasip2/release/intents-example.wasm \
+    --input-file ../intents-example/test-swap-usdc-wnear.json \
     --env "SWAP_CONTRACT_ID=v1.publishintent.near" \
     --env "SWAP_CONTRACT_PRIVATE_KEY=ed25519:..." \
     --env "NEAR_RPC_URL=https://rpc.mainnet.near.org" \

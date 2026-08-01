@@ -3,16 +3,17 @@ members = [".", "intents-contract"]
 resolver = "2"
 
 [package]
-name = "intents-ark"
+name = "intents-example"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [lib]
-name = "intents_ark"
+name = "intents_example"
 path = "src/lib.rs"
 
 [[bin]]
-name = "intents-ark"
+name = "intents-example"
 path = "src/main.rs"
 
 [dependencies]

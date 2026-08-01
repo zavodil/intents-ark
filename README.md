@@ -1,6 +1,6 @@
 # NEAR Intents Swap via OutLayer
 
-> **[Full documentation](https://outlayer.fastnear.com/docs/examples#intents-ark)** on the OutLayer dashboard.
+> **[Full documentation](https://outlayer.fastnear.com/docs/examples#intents-example)** on the OutLayer dashboard.
 
 This project implements token swaps using **NEAR Intents** protocol, executed off-chain via **NEAR OutLayer** platform.
 
@@ -55,7 +55,7 @@ rustup target add wasm32-wasip2
 # Build release
 cargo build --target wasm32-wasip2 --release
 
-# Output: target/wasm32-wasip2/release/intents-ark.wasm
+# Output: target/wasm32-wasip2/release/intents-example.wasm
 ```
 
 ### Build Contract
@@ -78,7 +78,7 @@ Store the operator's private key in OutLayer secrets:
 # Or via contract call:
 
 near call outlayer.near store_secrets '{
-  "repo": "github.com/zavodil/intents-ark",
+  "repo": "github.com/out-layer/intents-example",
   "branch": "main",
   "profile": "production",
   "encrypted_secrets": [1,2,3,...],  # Encrypted JSON
@@ -215,7 +215,7 @@ echo '{
   "amount_in": "1000000000000000000000000",
   "min_amount_out": "900000",
   "swap_contract_id": "intents-swap.testnet"
-}' | wasmtime run --wasi preview2 target/wasm32-wasip2/release/intents-ark.wasm
+}' | wasmtime run --wasi preview2 target/wasm32-wasip2/release/intents-example.wasm
 ```
 
 ### End-to-End Test
@@ -261,8 +261,8 @@ Tests storage registration for fungible tokens:
 cd ../wasi-test-runner
 
 cargo run --release -- \
-  --wasm ../intents-ark/target/wasm32-wasip2/release/intents-ark.wasm \
-  --input-file ../intents-ark/test-storage.json \
+  --wasm ../intents-example/target/wasm32-wasip2/release/intents-example.wasm \
+  --input-file ../intents-example/test-storage.json \
   --env "SWAP_CONTRACT_ID=your-account.testnet" \
   --env "SWAP_CONTRACT_PRIVATE_KEY=ed25519:YOUR_KEY" \
   --env "NEAR_RPC_URL=https://rpc.testnet.near.org" \
@@ -290,8 +290,8 @@ Tests complete USDC → WNEAR swap using NEAR Intents API:
 cd ../wasi-test-runner
 
 cargo run --release -- \
-  --wasm ../intents-ark/target/wasm32-wasip2/release/intents-ark.wasm \
-  --input-file ../intents-ark/test-swap-usdc-wnear.json \
+  --wasm ../intents-example/target/wasm32-wasip2/release/intents-example.wasm \
+  --input-file ../intents-example/test-swap-usdc-wnear.json \
   --env "SWAP_CONTRACT_ID=publishintent.near" \
   --env "SWAP_CONTRACT_PRIVATE_KEY=ed25519:YOUR_KEY" \
   --env "NEAR_RPC_URL=https://rpc.mainnet.near.org" \

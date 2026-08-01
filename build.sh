@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname $0)"
 
-echo "🔨 Building intents-ark WASI binary..."
+echo "🔨 Building intents-example WASI binary..."
 echo ""
 
 # Add target
@@ -17,6 +17,6 @@ echo ""
 echo "✅ Build complete!"
 echo ""
 echo "📦 Binary location:"
-echo "   target/wasm32-wasip2/release/intents-ark.wasm"
+echo "   target/wasm32-wasip2/release/intents-example.wasm"
 echo ""
-ls -lh target/wasm32-wasip2/release/intents-ark.wasm
+ls -lh target/wasm32-wasip2/release/intents-example.wasm
